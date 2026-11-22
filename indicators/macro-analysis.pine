@@ -1,9 +1,12 @@
 //@version=6
 indicator("Macro Analysis", overlay = true, behind_chart = false)
 
-const int SMA_LENGTH = 200
 const int MS_PER_DAY = 86400000
 const float DAYS_PER_YEAR = 365.25
+// Ten calendar years contain at most 3,653 daily sessions. Keep room for the
+// predecessor of the oldest target even when there are no sessions near it.
+const int PERIOD_HISTORY_SIZE = 4096
+const string SESSION_ZONE = "UTC+0"
 
 const color PANEL_BG = #171B23
 const color SECTION_BG = #29323F
@@ -11,26 +14,39 @@ const color LABEL_COLOR = #C4CEDA
 const color VALUE_COLOR = #F2F5F9
 const color MUTED_COLOR = #9EAFC2
 
-bool showSma = input.bool(true, "Show SMA 200D")
+int smaLength = input.int(200, "SMA", minval = 2, inline = "sma")
+string smaTimeframe = input.string("Daily", "", options = ["Daily", "Weekly", "Monthly"], inline = "sma")
+bool showSma = input.bool(true, "", inline = "sma", tooltip = "Length, timeframe, and whether to show the SMA line.")
+bool smoothSma = input.bool(false, "Smooth SMA", active = smaTimeframe != "Daily", tooltip = "Moves gradually to the next confirmed weekly or monthly SMA. The panel and line use the same value.")
+string panelCorner = input.string("Top right", "Panel corner", options = ["Top right", "Top left", "Bottom right", "Bottom left"])
 bool isDaily = timeframe.isdaily and timeframe.multiplier == 1
 bool supportedChart = isDaily and chart.is_standard
 bool confirmedDay = supportedChart and barstate.isconfirmed
-float confirmedClose = confirmedDay and math.sign(close) == 1 ? close : na
+
+validPrice(float price) =>
+    math.sign(price) == 1 ? price : na
+
+float confirmedClose = confirmedDay ? validPrice(close) : na
 
 var float firstClose = na
 var int firstDay = na
 var float peakClose = na
 var float worstDrawdown = na
 var int validDays = 0
-var int validCloseStreak = 0
 var int comparableDays = 0
 var int aboveSmaDays = 0
+var array<int> sessionDays = array.new<int>(PERIOD_HISTORY_SIZE)
+var array<float> sessionCloses = array.new<float>(PERIOD_HISTORY_SIZE)
+var int sessionCount = 0
 
 changePercent(float value, float reference) =>
     100 * (value / reference - 1)
 
 if confirmedDay
-    validCloseStreak := na(confirmedClose) ? 0 : validCloseStreak + 1
+    int slot = sessionCount % PERIOD_HISTORY_SIZE
+    sessionDays.set(slot, time_tradingday)
+    sessionCloses.set(slot, confirmedClose)
+    sessionCount += 1
     if not na(confirmedClose)
         if na(firstClose)
             firstClose := confirmedClose
@@ -40,51 +56,104 @@ if confirmedDay
         float drawdown = changePercent(confirmedClose, peakClose)
         worstDrawdown := math.min(nz(worstDrawdown, drawdown), drawdown)
 
-// ta.sma skips na. The streak prevents a window from reaching across an invalid bar.
-float rawSma = ta.sma(confirmedClose, SMA_LENGTH)
-float dailySma = confirmedDay and validCloseStreak >= SMA_LENGTH ? rawSma : na
-if not na(dailySma)
+consecutiveSma(float price, int length) =>
+    // ta.sma skips na. The streak prevents its window from crossing an invalid bar.
+    var int streak = 0
+    streak := na(price) ? 0 : streak + 1
+    float mean = ta.sma(price, length)
+    streak >= length ? mean : na
+
+completedSmas(int length) =>
+    float mean = consecutiveSma(validPrice(close), length)
+    [nz(mean[1]), nz(mean[2])]
+
+float smaForDay = consecutiveSma(confirmedClose, smaLength)
+if supportedChart and smaTimeframe != "Daily"
+    string requestedTimeframe = smaTimeframe == "Weekly" ? "1W" : "1M"
+    // Publish the prior period's SMA from the start of the next period. Send 0
+    // for unavailable windows so an explicit gap survives the chart merge.
+    [completedSma, earlierSma] = request.security(syminfo.tickerid, requestedTimeframe, completedSmas(smaLength), lookahead = barmerge.lookahead_on)
+    smaForDay := confirmedDay ? validPrice(completedSma) : na
+    if smoothSma and not na(smaForDay) and math.sign(earlierSma) == 1
+        int periodStart = time(requestedTimeframe)
+        int periodEnd = time_close(requestedTimeframe)
+        if periodEnd > periodStart
+            float progress = math.max(0.0, math.min(1.0, float(time_close - periodStart) / (periodEnd - periodStart)))
+            smaForDay := earlierSma + progress * (smaForDay - earlierSma)
+
+if not na(confirmedClose) and not na(smaForDay)
     comparableDays += 1
-    if math.sign(confirmedClose - dailySma) == 1
+    if math.sign(confirmedClose - smaForDay) == 1
         aboveSmaDays += 1
 
-plot(showSma ? dailySma : na, "SMA 200D", color = #609DB9, style = plot.style_linebr, display = display.pane + display.data_window)
+plot(showSma ? smaForDay : na, "SMA", color = #609DB9, style = plot.style_linebr, display = display.pane + display.data_window)
+
+yearsEarlier(int sessionDay, int yearsBack) =>
+    int targetYear = year(sessionDay, SESSION_ZONE) - yearsBack
+    int targetMonth = month(sessionDay, SESSION_ZONE)
+    int targetDay = dayofmonth(sessionDay, SESSION_ZONE)
+    bool leapYear = targetYear % 4 == 0 and (targetYear % 100 != 0 or targetYear % 400 == 0)
+    if targetMonth == 2 and targetDay == 29 and not leapYear
+        targetDay := 28
+    timestamp(SESSION_ZONE, targetYear, targetMonth, targetDay, 0, 0)
+
+referenceAt(int target, int count) =>
+    int oldest = math.max(0, count - PERIOD_HISTORY_SIZE)
+    int startIndex = oldest
+    int endIndex = count
+    // Search by chronological index and use modulo only when accessing storage.
+    while startIndex < endIndex
+        int mid = startIndex + int((endIndex - startIndex) / 2)
+        if sessionDays.get(mid % PERIOD_HISTORY_SIZE) <= target
+            startIndex := mid + 1
+        else
+            endIndex := mid
+    int slot = startIndex > oldest ? (startIndex - 1) % PERIOD_HISTORY_SIZE : na
+    // Keep invalid bars in the search so an unknown reference cannot be skipped.
+    [na(slot) ? na : sessionDays.get(slot), na(slot) ? na : sessionCloses.get(slot)]
 
 formatPercent(float value) =>
     na(value) ? "N/A" : str.tostring(value, "0.00") + "%"
 
 formatDay(int day) =>
-    na(day) ? "N/A" : str.format_time(day, "yyyy-MM-dd", "UTC+0")
+    na(day) ? "N/A" : str.format_time(day, "yyyy-MM-dd", SESSION_ZONE)
 
-formatPeriod(int startDay, int endDay, int days) =>
-    string summary = days > 0 ? "Period · " + str.tostring(days, "#,##0") + " days" : "Period"
-    string dates = formatDay(endDay)
-    if not na(startDay) and not na(endDay) and startDay != endDay
-        dates := formatDay(startDay) + " – " + dates
-    summary + "\n" + dates
+formatPeriod(int startDay, int endDay) =>
+    not na(startDay) and startDay != endDay ? formatDay(startDay) + " – " + formatDay(endDay) : formatDay(endDay)
 
-sectionRow(table panel, int row, string heading) =>
-    table.cell(panel, 0, row, heading, text_color = VALUE_COLOR, text_halign = text.align_left, text_size = size.small, bgcolor = SECTION_BG)
+band(table panel, int row, string heading, string tooltip = "") =>
+    table.cell(panel, 0, row, heading, text_color = VALUE_COLOR, text_halign = text.align_left, text_size = size.small, bgcolor = SECTION_BG, tooltip = tooltip)
 
-metricRow(table panel, int row, string label, string value, string tooltip) =>
-    table.cell(panel, 0, row, label, text_color = LABEL_COLOR, text_halign = text.align_left, text_size = size.small, tooltip = tooltip)
-    table.cell(panel, 1, row, value, text_color = value == "N/A" ? MUTED_COLOR : VALUE_COLOR, text_halign = text.align_right, text_size = size.small)
+metric(table panel, int column, int row, string label, float value, string tooltip) =>
+    table.cell(panel, column, row, label, text_color = LABEL_COLOR, text_halign = text.align_left, text_size = size.small, tooltip = tooltip)
+    table.cell(panel, column + 1, row, formatPercent(value), text_color = na(value) ? MUTED_COLOR : VALUE_COLOR, text_halign = text.align_right, text_size = size.small, tooltip = tooltip)
 
-var table panel = table.new(position.top_right, 2, supportedChart ? 11 : 1, bgcolor = PANEL_BG, frame_color = SECTION_BG, frame_width = 1)
+periodMetric(table panel, int column, int row, int yearsBack, int endDay, float endClose, int count) =>
+    int target = na(endDay) ? na : yearsEarlier(endDay, yearsBack)
+    [refDay, refClose] = referenceAt(target, count)
+    string detail = na(refDay) ? "Insufficient loaded history." : na(refClose) ? "Invalid reference close on " + formatDay(refDay) + "." : "From " + formatDay(refDay) + " to " + formatDay(endDay) + "."
+    if na(endClose) and not na(refClose)
+        detail += " Latest confirmed close unavailable."
+    metric(panel, column, row, str.tostring(yearsBack) + "Y", changePercent(endClose, refClose), detail)
+
+string panelPosition = switch panelCorner
+    "Top left" => position.top_left
+    "Bottom right" => position.bottom_right
+    "Bottom left" => position.bottom_left
+    => position.top_right
+
+var table panel = table.new(panelPosition, 4, supportedChart ? 7 : 1, bgcolor = PANEL_BG, frame_color = SECTION_BG, frame_width = 1)
 if barstate.isfirst
-    table.merge_cells(panel, 0, 0, 1, 0)
+    table.merge_cells(panel, 0, 0, 3, 0)
     if supportedChart
-        table.merge_cells(panel, 0, 3, 1, 3)
-        table.merge_cells(panel, 0, 4, 1, 4)
-        table.merge_cells(panel, 0, 7, 1, 7)
-        table.merge_cells(panel, 0, 10, 1, 10)
+        table.merge_cells(panel, 0, 5, 3, 5)
 
 if barstate.islast
     if supportedChart
         // The panel stays on the previous confirmed bar throughout the open session.
         int lastDay = barstate.isconfirmed ? time_tradingday : time_tradingday[1]
         float lastClose = barstate.isconfirmed ? confirmedClose : confirmedClose[1]
-        float lastSma = barstate.isconfirmed ? dailySma : dailySma[1]
+        float lastSma = barstate.isconfirmed ? smaForDay : smaForDay[1]
 
         int days = int((lastDay - firstDay) / MS_PER_DAY)
         float priceRatio = days > 0 and not na(lastClose) ? lastClose / firstClose : na
@@ -94,25 +163,26 @@ if barstate.islast
         float maxDrawdown = validDays >= 2 ? worstDrawdown : na
         float smaDistance = changePercent(lastClose, lastSma)
         float shareAbove = comparableDays > 0 ? 100.0 * aboveSmaDays / comparableDays : na
-        string aboveText = formatPercent(shareAbove)
-        if comparableDays > 0
-            aboveText += " · " + str.tostring(comparableDays, "#,##0") + " days"
 
-        sectionRow(panel, 0, "Performance")
-        metricRow(panel, 1, "Price Return", formatPercent(priceReturn), "Change in chart price since the first valid close. Dividend treatment depends on the chart's price series.")
-        metricRow(panel, 2, "CAGR", formatPercent(cagr), "Annualized price return using calendar days and 365.25 days per year.")
-        table.cell(panel, 0, 3, formatPeriod(firstDay, lastDay, days), text_color = LABEL_COLOR, text_halign = text.align_left, text_size = size.small, tooltip = "First valid close to latest confirmed session. Dates follow the symbol's trading sessions.")
-        sectionRow(panel, 4, "Drawdowns")
-        metricRow(panel, 5, "Current DD", formatPercent(currentDrawdown), "Latest confirmed close relative to the highest observed close.")
-        metricRow(panel, 6, "Max DD", formatPercent(maxDrawdown), "Lowest observed drawdown over the loaded history.")
-        sectionRow(panel, 7, "MA Behavior")
-        metricRow(panel, 8, "Distance to SMA 200D", formatPercent(smaDistance), "Latest confirmed close relative to its SMA of 200 consecutive valid chart closes.")
-        metricRow(panel, 9, "Days Above SMA", aboveText, "Share of comparable days strictly above their SMA 200D. The count includes all comparable days, including closes at their SMA.")
-
-        string coverage = "History loaded by TradingView"
+        string dateDetail = "First valid close to latest confirmed session in TradingView's loaded history."
         if not na(lastDay) and na(lastClose)
-            coverage += " · Latest close unavailable"
-        table.cell(panel, 0, 10, coverage, text_color = MUTED_COLOR, text_halign = text.align_left, text_size = size.small, tooltip = "The first loaded bar can be later than the first trading day. Missing bars may limit coverage.")
+            dateDetail += " Latest confirmed close unavailable."
+        band(panel, 0, formatPeriod(firstDay, lastDay), dateDetail)
+        metric(panel, 0, 1, "Return", priceReturn, "Price return since the first valid close. Adjustments follow the chart's price series.")
+        metric(panel, 2, 1, "CAGR", cagr, "Annualized price return using elapsed calendar days.")
+        periodMetric(panel, 0, 2, 1, lastDay, lastClose, sessionCount)
+        periodMetric(panel, 2, 2, 3, lastDay, lastClose, sessionCount)
+        periodMetric(panel, 0, 3, 5, lastDay, lastClose, sessionCount)
+        periodMetric(panel, 2, 3, 10, lastDay, lastClose, sessionCount)
+        metric(panel, 0, 4, "Current DD", currentDrawdown, "Latest confirmed close relative to the highest observed close.")
+        metric(panel, 2, 4, "Max DD", maxDrawdown, "Lowest observed drawdown over the loaded history.")
+        string unit = smaTimeframe == "Daily" ? "D" : smaTimeframe == "Weekly" ? "W" : "M"
+        string maLabel = "SMA " + str.tostring(smaLength) + unit
+        if smoothSma and smaTimeframe != "Daily"
+            maLabel += " · Smooth"
+        band(panel, 5, maLabel, "Uses consecutive valid closes on the selected timeframe. Weekly and monthly values become available in the next period.")
+        metric(panel, 0, 6, "MA Distance", smaDistance, "Latest confirmed daily close relative to its available SMA.")
+        metric(panel, 2, 6, "Above MA", shareAbove, str.tostring(comparableDays, "#,##0") + " comparable days. Closes equal to SMA are included in the denominator.")
     else
         string instruction = isDaily ? "Use a standard price chart" : "Use a 1D chart"
-        sectionRow(panel, 0, "Macro Analysis · " + instruction)
+        band(panel, 0, "Macro Analysis · " + instruction)

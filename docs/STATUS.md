@@ -1,5 +1,24 @@
 # Status
 
+## P02
+
+Macro Analysis visar nu kalenderbaserad prisavkastning för 1Y, 3Y, 5Y och 10Y med referensdatum i tooltips. SMA har valbar längd och beräkningsintervall på en gemensam inställningsrad med kryssruta för linjen. Weekly och Monthly har valbar utjämning för både linjen och SMA-måtten. Panelen visar datum och mått på sju rader och kan placeras i valfritt hörn. [Måttdefinitioner](METRICS.md#beslutat)
+
+### Verifiering den 22 november 2026
+
+- Slutkällan kompilerades i TradingView Desktop efter kopiering från VS Code. Den befintliga privata Macro Analysis-instansen uppdaterades.
+- **XETR_DLY:SXR8, 1D, SEK** med utdelningsjustering av. P01-värdena för 2010-09-21 till 2026-11-20 stämde vid Daily 200, inklusive 797,60 % Return, 14,54 % CAGR, −8,26 % aktuell DD, −31,66 % max-DD, 2,51 % SMA-distans och 85,28 % av 3 865 jämförbara dagar över SMA. 1Y, 3Y, 5Y och 10Y visade 13,78 %, 55,72 %, 81,33 % respektive 306,08 %. 10Y-tooltipen visade fredagen 2016-11-18 som referens för söndagens måldatum.
+- En oberoende rullande summa och separata historiska räknare i Pine gav för Daily 50 SMA 8 186,43, distans −5,28 %, andel 72,48 % och 4 015 jämförbara dagar. Daily 100 gav 8 023,34, −3,35 %, 78,06 % och 3 965 dagar. Daily 200 gav 7 564,29, 2,51 %, 85,28 % och 3 865 dagar. Linjen och panelmåtten följde valda inställningar. Kryssrutan dolde linjen med panelen kvar.
+- Weekly 2 respektive Monthly 2 kördes på samma SXR8-chart. Med utjämning av blev MA Distance −3,41 % respektive −5,31 % och Above MA 61,85 % respektive 69,80 %. Med **Smooth SMA** visade Weekly 2 −3,41 % och 63,50 %, och Monthly 2 −4,98 % och 73,06 %. Den omärkta kryssrutan ändrade linjens synlighet med samma panelvärden. Panelen flyttades till nedre vänster och återställdes till standardhörnet övre höger.
+- **SXR8, 1W** visade **Use a 1D chart**. **BINANCE:PUMPUSDT, 1D** visade 1Y −14,12 % med referens 2025-11-21 och `N/A` för 3Y, 5Y och 10Y. Panelen låg kvar på 2026-11-21 när den öppna dagsbarens pris ändrades från 0,002555 till 0,002554 USDT den 22 november.
+- En tillfällig Pine-kontroll passerade kalenderfall för helg, börshelgdag, 29 februari och sekelår, för kort historik samt ogiltig och senare giltig referensstängning. Den tillfälliga kontrollinstansen togs bort. En lokal Python-kontroll jämförde den begränsade datumuppslagningen med full historik efter att lagringsfönstret hade gått runt. [Reproducerbara exempel](METRICS.md#deterministiska-p02-exempel)
+
+Historiken och dess eventuella luckor beror på TradingViews prisserie. En verklig övergång mellan två bekräftade vecko- eller månadsperioder följdes inte.
+
+### Nästa steg
+
+P03 kan avgränsas till en deterministisk ATH-baserad drawdown-episod med start, botten och återhämtning. Verifiera först hur pågående och avslutade episoder räknas. [Metodförslag](METRICS.md#drawdown-episoder)
+
 ## P01
 
 [Macro Analysis i Pine Script v6](../indicators/macro-analysis.pine) visar prisavkastning, CAGR, mätperiod, aktuell och maximal drawdown, distans till SMA 200D samt andel och antal jämförbara dagar. SMA-linjen kan döljas i indikatorns inställningar. P01 stöder standardgrafer på exakt 1D. [Måttdefinitioner](METRICS.md#beslutat)
@@ -18,10 +37,6 @@ Indikatorn kompilerades och kördes i TradingView Desktop. På SXR8 växlade **S
 En tillfällig Pine-testvariant matade indikatorns beräkningslogik med [syntetiska stängningar och sessionsdatum](METRICS.md#deterministiska-p01-exempel). Kontrollerna passerade för 46,41 % prisavkastning och 10,00 % CAGR, återhämtning med 0 % aktuell DD och −25 % max-DD, SMA-värdena 100, 100,05 och 100 samt en andel dagar över SMA på 1/3. Kontrollen omfattade även enstaka och sammanfallande datum, `na`, noll och negativa stängningar, 199 och 200 giltiga barer i rad, lika stängning och SMA vid decimalpriser samt en simulerad öppen bar. Ett ogiltigt senaste pris visade `N/A` för aktuella mått och lämnade de historiska värdena tillgängliga.
 
 En verklig övergång från öppen till stängd dagsbar följdes inte. Täckningen är begränsad till den laddade prisserien. Luckor där datakällan saknar en hel bar kan påverka resultaten.
-
-### Nästa steg
-
-Minsta P02 är prisavkastning för **1 år** på 1D, med faktiska referensdatum och `N/A` när ettårsunderlaget saknas. Verifiera referensval runt helger och skottdagar. Övriga fasta perioder, veckovis visning, episodmått och avancerad SMA-statistik ligger kvar som metodförslag. [Öppna måttförslag](METRICS.md#förslag)
 
 ## P00 · 22 november 2026
 

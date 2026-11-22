@@ -1,12 +1,14 @@
 # Macro Analysis
 
-Macro Analysis visar långsiktig prisutveckling, drawdowns och beteende kring SMA 200D för den aktuella symbolen i TradingView.
+Macro Analysis visar långsiktig prisutveckling, drawdowns och beteende kring ett valbart SMA för den aktuella symbolen i TradingView.
 
-Öppna en vanlig prisgraf på **1D**. Klistra in [Pine v6-källan](indicators/macro-analysis.pine) i **Pine Editor** och välj **Add to chart**. Med **Show SMA 200D** kan du dölja linjen och behålla statistiken.
+Öppna en vanlig prisgraf på **1D**. Klistra in [Pine v6-källan](indicators/macro-analysis.pine) i **Pine Editor** och välj **Update on chart** för en befintlig instans eller **Add to chart** första gången. På raden **SMA** väljer du längd och **Daily**, **Weekly** eller **Monthly**. Standard är 200 dagar. Kryssrutan på samma rad döljer eller visar linjen och behåller statistiken.
 
-Panelen visar prisavkastning, CAGR och mätperiod, aktuell och maximal drawdown samt distans till SMA 200D och andel jämförbara dagar över SMA. Vecko- och intradagsintervall får ett meddelande om att 1D krävs.
+För Weekly och Monthly kan du aktivera **Smooth SMA**. Linjen, **MA Distance** och **Above MA** använder då samma utjämnade värde. **Panel corner** placerar panelen i något av chartens fyra hörn.
 
-Mätperioden slutar vid den senaste bekräftade dagsbaren. Resultaten bygger på den historik som TradingView har laddat och chartens prisserie, inklusive eventuella val av valuta och justeringar. [Verifiering och nästa steg](docs/STATUS.md#p01)
+Panelen visar prisavkastning sedan start och för 1, 3, 5 och 10 kalenderår, CAGR, drawdowns och SMA-mått. Periodvärdenas tooltips visar faktiska referensdatum. Vecko- och intradagsintervall får ett meddelande om att 1D krävs.
+
+Mätperioden slutar vid den senaste bekräftade dagsbaren. Resultaten bygger på den historik som TradingView har laddat och chartens prisserie, inklusive eventuella val av valuta och justeringar. [Verifiering och nästa steg](docs/STATUS.md#p02)
 
 - Produktmål, användningsflöde och avgränsning. [Projektbeskrivning](docs/PROJECT_BRIEF.md)
 - Datakrav, mått och räkneexempel. [Måttdefinitioner](docs/METRICS.md)
