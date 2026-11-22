@@ -12,6 +12,8 @@ Med **Panel View → Dips** visas aktuell nedgång från den lokala toppen och h
 
 Med **Panel View → Compare** jämför du chartsymbolen med upp till fyra extra symboler. Förvalen är ACWI, EUNL och VWCE från de andra graferna i Avanza-fliken samt XACT Norden Högutdelande (XACTHDIV). Kryssrutan på varje symbolrad styr om den visas. Kolumnernas tooltips visar valuta och faktiska sessionsdatum. [Jämförelseregler och datatäckning](docs/METRICS.md#symboljämförelse)
 
+**Compare currency** väljer gemensam SEK eller varje symbols egen valuta (**Native**). **Opportunity** väger samman 3Y och 5Y CAGR med avståndet tillbaka till tidigare pristopp. En stjärna markerar högsta jämförbara poäng när minst två symboler kvalificerar sig. [Beräkningsmetod](docs/METRICS.md#opportunity)
+
 Mätperioderna bygger på bekräftade dagsstängningar i den historik TradingView tillhandahåller. [Verifiering och nästa steg](docs/STATUS.md#p04)
 
 - Produktmål, användningsflöde och avgränsning. [Projektbeskrivning](docs/PROJECT_BRIEF.md)

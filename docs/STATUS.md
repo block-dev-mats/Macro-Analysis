@@ -1,5 +1,19 @@
 # Status
 
+## P06
+
+Compare har **3Y** och **Opportunity**, med gemensam SEK som standard och **Native** som alternativ. 3Y- och 5Y-tooltipen visar kalenderbaserad CAGR. En stjärna vid symbolen markerar en unik högsta poäng när de kvalificerade symbolerna har jämförbara datum och valuta. [Metod och färger](METRICS.md#opportunity)
+
+### Verifiering den 22 november 2026
+
+- Lokal och publicerad `main` utgick från P04 (`c0d0b9d`). P05 fanns som uppdragsbeskrivning i projektchatten. Någon verifierad P05-leverans hittades inte. P06 använder P04:s verifierade dagslogik och avstår från en global stjärna vid förskjutna slut- eller referensdatum.
+- Pine-fixturer med produktionsfunktionerna verifierade kalenderdagar, viktad Quality och Opportunity för hög tillväxt med liten rabatt, svag tillväxt med stor rabatt och god tillväxt med betydande rabatt. De täckte även negativa avkastningar, Max DD närmast noll, neutrala färger för svag Quality, lika poäng vid visad precision, noll rabatt, kort historik, en kvalificerad symbol, saknad valuta samt olika valuta och sessionsdatum.
+- Dagsstängningarna i SEK jämfördes med direkta SEK-prisförfrågningar i TradingView för EUNL, VWCE, ACWI och XACTHDIV. På SXR8:s tidsaxel matchade 4 064, 1 865, 4 064 respektive 2 441 jämförda observationer. EUNL, VWCE och ACWI fick omräknade priser. XACTHDIV och SXR8:s redan SEK-uttryckta priser behölls.
+- Slutkällan kompilerades och sparades från VS Code i den befintliga privata indikatorn i TradingView Desktop. Revision 24 körs på SXR8 1D. En tvåsymbolskörning visade en stjärna när både valuta och datum matchade och poängen skilde sig. Fem förvalda symboler i SEK visade poäng med förskjutna datum och ingen stjärna. Native behöll P04:s pris- och dipmått. Overview, Dips och SMA 200D matchade SXR8-baslinjen. 1W visade 1D-instruktionen.
+- Fem symboler kördes inom Pine-gränserna. Koden har upp till fyra externa statistikförfrågningar med 21 skalära fält vardera, upp till fem skalära förfrågningar för dagsstängningar i SEK och högst en separat vecko- eller månadsförfrågan för SMA. Pine Profiler mätte **467,7 ms** totalt för slutrevisionen på SXR8 i SEK. Statistikförfrågan stod för **365,9 ms** och **29 495** exekveringar enligt profileraren. [Pines resursgränser](https://www.tradingview.com/pine-script-docs/writing/limitations/)
+
+Minsta nästa steg är att följa en faktisk sessionsövergång på en värdgraf med blandade börskalendrar och dokumentera när symbolerna får samstämmiga slutdatum för Opportunity.
+
 ## P04
 
 **Panel View → Compare** visar chartsymbolen och upp till fyra extra symboler. Förvalen är **ACWI**, **EUNL**, **VWCE** och **XACTHDIV**. Tabellen visar CAGR, 1Y, 5Y, Current DD, Max DD, Active Dip och historisk frekvens för avslutade nedgångar på minst 10 %. [Jämförelseregler](METRICS.md#symboljämförelse)

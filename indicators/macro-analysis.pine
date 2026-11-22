@@ -24,6 +24,7 @@ string panelCorner = input.string("Top right", "Panel corner", options = ["Top r
 string panelView = input.string("Overview", "Panel View", options = ["Overview", "Dips", "Compare"])
 bool showDips = panelView == "Dips"
 bool showCompare = panelView == "Compare"
+bool compareInSEK = input.string("SEK", "Compare currency", options = ["SEK", "Native"], active = showCompare) == "SEK"
 float dipFirst = input.float(5, "Dip thresholds (%)", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
 float dipSecond = input.float(10, "", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
 float dipThird = input.float(20, "", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
@@ -41,11 +42,23 @@ bool orderedThresholds = dipFirst < dipSecond and dipSecond < dipThird and dipTh
 bool isDaily = timeframe.isdaily and timeframe.multiplier == 1
 bool supportedChart = isDaily and chart.is_standard
 bool confirmedDay = supportedChart and barstate.isconfirmed
+bool comparisonPanel = supportedChart and showCompare
 
 validPrice(float price) =>
     math.sign(price) == 1 ? price : na
 
+priceInCompareCurrency(float price, string quoteCurrency, bool useSEK) =>
+    float converted = price
+    if useSEK and (na(quoteCurrency) or quoteCurrency == "")
+        converted := na
+    else if useSEK and quoteCurrency != currency.SEK
+        // Request the raw close in SEK inside this symbol's own daily context.
+        converted := request.security(syminfo.tickerid, "1D", close, gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true, currency = currency.SEK)
+    validPrice(converted)
+
 float confirmedClose = confirmedDay ? validPrice(close) : na
+float comparisonClose = comparisonPanel ? priceInCompareCurrency(close, syminfo.currency, compareInSEK) : na
+bool comparisonFxMissing = comparisonPanel and not na(validPrice(close)) and na(comparisonClose)
 
 var int comparableDays = 0
 var int aboveSmaDays = 0
@@ -64,6 +77,7 @@ type PriceHistory
     int validDays = 0
     int lastDay = na
     float lastClose = na
+    bool missingFx = false
 
 newPriceHistory() =>
     PriceHistory.new(array.new<int>(PERIOD_HISTORY_SIZE), array.new<float>(PERIOD_HISTORY_SIZE))
@@ -149,9 +163,11 @@ var array<float> thresholds = showCompare ? array.from(10.0) : array.from(dipFir
 var DipHistory chartDips = DipHistory.new(array.new<int>(thresholds.size(), 0))
 
 if confirmedDay
-    chartPrices.addClose(time_tradingday, confirmedClose)
+    float metricClose = showCompare ? comparisonClose : confirmedClose
+    chartPrices.addClose(time_tradingday, metricClose)
+    chartPrices.missingFx := chartPrices.missingFx or comparisonFxMissing
     if showDips or showCompare
-        chartDips.addDipClose(time_tradingday, confirmedClose, reversal, thresholds, showCompare or orderedThresholds)
+        chartDips.addDipClose(time_tradingday, metricClose, reversal, thresholds, showCompare or orderedThresholds)
 
 consecutiveSma(float price, int length) =>
     // ta.sma skips na. The streak prevents its window from crossing an invalid bar.
@@ -280,34 +296,55 @@ referenceForAnchor(PriceHistory history, int target) =>
 
 int comparisonAnchor = int(timenow / MS_PER_DAY) * MS_PER_DAY
 int oneYearTarget = yearsEarlier(comparisonAnchor, 1)
+int threeYearTarget = yearsEarlier(comparisonAnchor, 3)
 int fiveYearTarget = yearsEarlier(comparisonAnchor, 5)
 
-comparisonMetrics(PriceHistory prices, DipHistory dips, int oneYear, int fiveYears) =>
+periodCagr(int start, float initial, int finish, float finalPrice) =>
+    float years = (finish - start) / MS_PER_DAY / DAYS_PER_YEAR
+    years > 0 ? 100 * (math.pow(finalPrice / initial, 1.0 / years) - 1) : na
+
+comparisonMetrics(PriceHistory prices, DipHistory dips, int oneYear, int threeYears, int fiveYears, bool useSEK) =>
     [ref1, close1] = referenceForAnchor(prices, oneYear)
+    [ref3, close3] = referenceForAnchor(prices, threeYears)
     [ref5, close5] = referenceForAnchor(prices, fiveYears)
     int count = dips.counts.get(0)
     [rate, interval] = dipRates(count, dips.observedDays, prices.firstDay)
+    bool history3 = prices.lastDay > threeYears
+    bool history5 = prices.lastDay > fiveYears
     // Scalar output keeps the source history and episode state in their own context.
-    [syminfo.currency, prices.firstDay, prices.lastDay, ref1, ref5, count, dips.observedDays, dips.invalidBars,
+    [useSEK ? currency.SEK : syminfo.currency, prices.firstDay, prices.lastDay, ref1, ref3, ref5,
+     count, dips.observedDays, dips.invalidBars, prices.missingFx,
      annualizedReturn(prices), prices.lastDay > oneYear ? changePercent(prices.lastClose, close1) : na,
-     prices.lastDay > fiveYears ? changePercent(prices.lastClose, close5) : na,
-     changePercent(prices.lastClose, prices.peakClose), maximumDrawdown(prices), changePercent(prices.lastClose, dips.top), rate, interval]
+     history3 ? changePercent(prices.lastClose, close3) : na, history5 ? changePercent(prices.lastClose, close5) : na,
+     changePercent(prices.lastClose, prices.peakClose), maximumDrawdown(prices), changePercent(prices.lastClose, dips.top), rate, interval,
+     history3 ? periodCagr(ref3, close3, prices.lastDay, prices.lastClose) : na,
+     history5 ? periodCagr(ref5, close5, prices.lastDay, prices.lastClose) : na]
 
-remoteComparison(float reversalPct, int oneYear, int fiveYears, int previousDay, float previousClose) =>
+remoteComparison(float reversalPct, int oneYear, int threeYears, int fiveYears, bool useSEK, float price, bool missingFx, int previousDay, float previousPrice, bool previousFxMissing) =>
     var PriceHistory prices = newPriceHistory()
     var DipHistory dips = DipHistory.new(array.new<int>(1, 0))
     var array<float> levels = array.from(10.0)
     // The previous native bar is final even during a delayed feed's open bar.
     // Include the current native bar only if historical and past its own close.
     if not na(previousDay) and (na(prices.lastDay) or prices.lastDay < previousDay)
-        float previousPrice = validPrice(previousClose)
         prices.addClose(previousDay, previousPrice)
+        prices.missingFx := prices.missingFx or previousFxMissing
         dips.addDipClose(previousDay, previousPrice, reversalPct, levels, true)
     if barstate.ishistory and time_close <= timenow and (na(prices.lastDay) or prices.lastDay < time_tradingday)
-        float price = validPrice(close)
         prices.addClose(time_tradingday, price)
+        prices.missingFx := prices.missingFx or missingFx
         dips.addDipClose(time_tradingday, price, reversalPct, levels, true)
-    comparisonMetrics(prices, dips, oneYear, fiveYears)
+    comparisonMetrics(prices, dips, oneYear, threeYears, fiveYears, useSEK)
+
+const int ROW_CAGR = 0
+const int ROW_1Y = 1
+const int ROW_3Y = 2
+const int ROW_5Y = 3
+const int ROW_CURRENT_DD = 4
+const int ROW_MAX_DD = 5
+const int ROW_ACTIVE_DIP = 6
+const int ROW_DIPS = 7
+const int ROW_OPPORTUNITY = 8
 
 type ComparisonColumn
     string tickerId
@@ -315,17 +352,31 @@ type ComparisonColumn
     int firstDay
     int lastDay
     int ref1
+    int ref3
     int ref5
     int dipCount
     int observedDays
     int invalidBars
+    bool missingFx
     float yearsPerDip
+    float cagr3
+    float cagr5
+    float quality
     array<float> values
+
+opportunityIndex(float quality, float currentDD) =>
+    float discount = -currentDD
+    quality > 0 and discount > 0 and discount < 100 ? quality * discount / (100 - discount) : na
+
+comparisonColumn(string symbol, string quoteCurrency, int start, int finish, int ref1, int ref3, int ref5, int dipCount, int observed, int invalid, bool missingFx, float cagr, float ret1, float ret3, float ret5, float currentDD, float maxDD, float activeDip, float rate, float interval, float cagr3, float cagr5) =>
+    float quality = missingFx ? na : 0.7 * cagr3 + 0.3 * cagr5
+    float score = opportunityIndex(quality, currentDD)
+    array<float> values = missingFx ? array.new<float>(ROW_OPPORTUNITY + 1) : array.from(cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, score)
+    ComparisonColumn.new(symbol, quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, interval, cagr3, cagr5, quality, values)
 
 canonicalSymbol(string tickerId) =>
     str.replace_all(ticker.standard(tickerId), "_DLY:", ":")
 
-bool comparisonPanel = supportedChart and showCompare
 var array<string> extraSymbols = array.new<string>()
 var array<ComparisonColumn> columns = array.new<ComparisonColumn>()
 if comparisonPanel
@@ -337,48 +388,97 @@ if comparisonPanel
             string standardSymbol = canonicalSymbol(symbol)
             if enabled.get(index) and symbol != "" and standardSymbol != chartSymbol and not extraSymbols.includes(standardSymbol)
                 extraSymbols.push(standardSymbol)
-    [quoteCurrency, start, finish, ref1, ref5, dipCount, observed, invalid, cagr, ret1, ret5, currentDD, maxDD, activeDip, rate, interval] = comparisonMetrics(chartPrices, chartDips, oneYearTarget, fiveYearTarget)
+    [quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5] = comparisonMetrics(chartPrices, chartDips, oneYearTarget, threeYearTarget, fiveYearTarget, compareInSEK)
     if barstate.islast
         columns.clear()
-        columns.push(ComparisonColumn.new(canonicalSymbol(syminfo.tickerid), quoteCurrency, start, finish, ref1, ref5, dipCount, observed, invalid, interval, array.from(cagr, ret1, ret5, currentDD, maxDD, activeDip, rate)))
+        columns.push(comparisonColumn(canonicalSymbol(syminfo.tickerid), quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5))
 if comparisonPanel
     for symbol in extraSymbols
-        [quoteCurrency, start, finish, ref1, ref5, dipCount, observed, invalid, cagr, ret1, ret5, currentDD, maxDD, activeDip, rate, interval] = request.security(symbol, "1D", remoteComparison(reversal, oneYearTarget, fiveYearTarget, time_tradingday[1], close[1]), lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+        [quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5] = request.security(symbol, "1D",
+             remoteComparison(reversal, oneYearTarget, threeYearTarget, fiveYearTarget, compareInSEK, comparisonClose, comparisonFxMissing, time_tradingday[1], comparisonClose[1], comparisonFxMissing[1]),
+             lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
         if barstate.islast
-            columns.push(ComparisonColumn.new(symbol, quoteCurrency, start, finish, ref1, ref5, dipCount, observed, invalid, interval, array.from(cagr, ret1, ret5, currentDD, maxDD, activeDip, rate)))
+            columns.push(comparisonColumn(symbol, quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5))
+
+comparisonStart(ComparisonColumn asset, int row) =>
+    switch row
+        ROW_1Y => asset.ref1
+        ROW_3Y => asset.ref3
+        ROW_5Y => asset.ref5
+        => asset.firstDay
+
+sameComparisonDateAndCurrency(ComparisonColumn left, ComparisonColumn right) =>
+    not na(left.currency) and left.currency != "" and left.currency == right.currency and not na(left.lastDay) and left.lastDay == right.lastDay
+
+rankedValue(ComparisonColumn asset, int row) =>
+    float value = asset.values.get(row)
+    row == ROW_CURRENT_DD ? (asset.quality > 0 ? -value : na) : value
 
 comparisonColor(array<ComparisonColumn> assets, ComparisonColumn asset, int row) =>
     float value = asset.values.get(row)
     color result = na(value) ? MUTED_COLOR : VALUE_COLOR
-    if not na(value) and not na(asset.currency) and (row <= 2 or row == 4)
-        int start = row == 1 ? asset.ref1 : row == 2 ? asset.ref5 : asset.firstDay
-        float rounded = math.round(value, 2)
+    float rank = rankedValue(asset, row)
+    if not na(rank) and row <= ROW_MAX_DD
+        int start = comparisonStart(asset, row)
+        float rounded = math.round(rank, 2)
         float lowest = rounded
         float highest = rounded
         for other in assets
-            int otherStart = row == 1 ? other.ref1 : row == 2 ? other.ref5 : other.firstDay
-            float otherValue = other.values.get(row)
-            if not na(otherValue) and asset.currency == other.currency and start == otherStart and asset.lastDay == other.lastDay
-                float otherRounded = math.round(otherValue, 2)
+            float otherRank = rankedValue(other, row)
+            bool samePeriod = row == ROW_CURRENT_DD or start == comparisonStart(other, row)
+            if not na(otherRank) and samePeriod and sameComparisonDateAndCurrency(asset, other)
+                float otherRounded = math.round(otherRank, 2)
                 lowest := math.min(lowest, otherRounded)
                 highest := math.max(highest, otherRounded)
         if lowest < highest
-            result := rounded == lowest ? LOW_COLOR : rounded == highest and highest > 0 ? BEST_COLOR : VALUE_COLOR
+            result := rounded == lowest ? LOW_COLOR : rounded == highest ? BEST_COLOR : VALUE_COLOR
     result
 
-comparisonDetail(ComparisonColumn asset, int row) =>
+opportunityLeader(array<ComparisonColumn> assets) =>
+    int firstCandidate = na
+    int bestCandidate = na
+    float highest = na
+    int eligibleCount = 0
+    bool tied = false
+    bool compatible = true
+    bool missingFx = false
+    for [index, asset] in assets
+        missingFx := missingFx or asset.missingFx
+        float score = asset.values.get(ROW_OPPORTUNITY)
+        if not na(score)
+            eligibleCount += 1
+            if na(firstCandidate)
+                firstCandidate := index
+            else
+                ComparisonColumn first = assets.get(firstCandidate)
+                compatible := compatible and sameComparisonDateAndCurrency(first, asset) and first.ref3 == asset.ref3 and first.ref5 == asset.ref5
+            float rounded = math.round(score, 1)
+            if na(highest) or rounded > highest
+                bestCandidate := index
+                highest := rounded
+                tied := false
+            else if rounded == highest
+                tied := true
+    string detail = missingFx ? "No leader: required SEK rates are unavailable." : eligibleCount < 2 ? "No leader: at least two eligible symbols are required." : not compatible ? "No leader: eligible symbols have different currencies or session dates." : tied ? "No leader: the highest displayed score is tied." : "★ marks the highest comparable score."
+    [not missingFx and eligibleCount >= 2 and compatible and not tied ? bestCandidate : na, detail]
+
+comparisonDetail(ComparisonColumn asset, int row, string leaderDetail) =>
     string dates = "Loaded history: " + formatPeriod(asset.firstDay, asset.lastDay) + "."
+    if asset.missingFx
+        dates += "\nSEK conversion is missing for at least one valid close. Choose Native to view the series in its own currency."
     string detail = switch row
-        1 => "Reference " + formatDay(asset.ref1) + " · Shared target " + formatDay(oneYearTarget) + "."
-        2 => "Reference " + formatDay(asset.ref5) + " · Shared target " + formatDay(fiveYearTarget) + "."
-        3 => "Latest confirmed close relative to the highest observed close."
-        4 => "Lowest observed drawdown over the loaded history."
-        5 => "Latest confirmed close relative to the local episode peak."
-        6 => na(asset.dipCount) ? "Daily history unavailable." : str.tostring(asset.dipCount) + " completed dips ≥10% · " + str.tostring(asset.observedDays, "#,##0") + " observed calendar days."
+        ROW_1Y => "Reference " + formatDay(asset.ref1) + " · Shared target " + formatDay(oneYearTarget) + "."
+        ROW_3Y => "Reference " + formatDay(asset.ref3) + " · Shared target " + formatDay(threeYearTarget) + ".\n3Y CAGR: " + formatPercent(asset.missingFx ? na : asset.cagr3) + "."
+        ROW_5Y => "Reference " + formatDay(asset.ref5) + " · Shared target " + formatDay(fiveYearTarget) + ".\n5Y CAGR: " + formatPercent(asset.missingFx ? na : asset.cagr5) + "."
+        ROW_CURRENT_DD => "Latest confirmed close relative to the highest observed close. Color compares discounts among symbols with positive Quality and matching end date and currency."
+        ROW_MAX_DD => "Lowest observed drawdown over the loaded history. A value closer to zero ranks higher."
+        ROW_ACTIVE_DIP => "Latest confirmed close relative to the local episode peak."
+        ROW_DIPS => na(asset.dipCount) ? "Daily history unavailable." : str.tostring(asset.dipCount) + " completed dips ≥10% · " + str.tostring(asset.observedDays, "#,##0") + " observed calendar days."
+        ROW_OPPORTUNITY => "Historical heuristic · Quality (70% 3Y CAGR + 30% 5Y CAGR) × recovery upside.\nRecovery upside is the price increase to the historical high.\nRequires positive Quality and a drawdown.\nQuality: " + formatPercent(asset.quality) + ".\n" + leaderDetail
         => "Annualized price return using elapsed calendar days."
-    if row == 1 or row == 2
-        detail += " Latest confirmed: " + formatDay(asset.lastDay) + " · Shared end target: " + formatDay(comparisonAnchor) + "."
-    if row == 6 and not na(asset.dipCount)
+    if row >= ROW_1Y and row <= ROW_5Y
+        detail += "\nLatest confirmed: " + formatDay(asset.lastDay) + " · Shared end target: " + formatDay(comparisonAnchor) + "."
+    if row == ROW_DIPS and not na(asset.dipCount) and not asset.missingFx
         if asset.invalidBars > 0
             detail += "\n" + str.tostring(asset.invalidBars) + " invalid closes break episode coverage."
         if na(asset.values.get(row))
@@ -386,25 +486,35 @@ comparisonDetail(ComparisonColumn asset, int row) =>
         detail += "\nObserved frequency."
     detail + "\n" + dates
 
+formatOpportunity(float value) =>
+    na(value) ? "N/A" : math.round(value, 1) == 0 ? "<0.1" : str.tostring(value, "0.0")
+
 renderComparison(table panel, array<ComparisonColumn> assets, int firstRow) =>
-    var array<string> labels = array.from("CAGR", "1Y", "5Y", "Current DD", "Max DD", "Active Dip", "Dips ≥10%")
+    var array<string> labels = array.from("CAGR", "1Y", "3Y", "5Y", "Current DD", "Max DD", "Active Dip", "Dips ≥10%", "Opportunity")
+    [leader, leaderDetail] = opportunityLeader(assets)
     if firstRow > 0
         // Leave space for TradingView's chart controls in the top-right corner.
         table.cell(panel, 0, 0, " ", text_size = size.small)
-    table.cell(panel, 0, firstRow, "", bgcolor = PANEL_BG)
+    table.cell(panel, 0, firstRow, compareInSEK ? "SEK" : "Native", text_color = LABEL_COLOR, text_halign = text.align_left, text_size = size.small, bgcolor = SECTION_BG)
     for [row, label] in labels
         table.cell(panel, 0, firstRow + row + 1, label, text_color = LABEL_COLOR, text_halign = text.align_left, text_size = size.small, bgcolor = PANEL_BG)
     for [index, asset] in assets
         int column = index + 1
         array<string> parts = str.split(asset.tickerId, ":")
-        string name = parts.last()
+        bool isLeader = index == leader
+        string name = parts.last() + (isLeader ? " ★" : "")
         string headerDetail = asset.tickerId + (na(asset.currency) ? "" : " · " + asset.currency)
         headerDetail += "\nLatest confirmed: " + formatDay(asset.lastDay) + ".\nLoaded history: " + formatPeriod(asset.firstDay, asset.lastDay) + "."
         headerDetail += "\nPrice adjustments depend on the symbol's feed."
-        table.cell(panel, column, firstRow, name, text_color = VALUE_COLOR, text_halign = text.align_right, text_size = size.small, bgcolor = SECTION_BG, tooltip = headerDetail)
+        if isLeader
+            headerDetail += "\nHighest comparable Opportunity."
+        table.cell(panel, column, firstRow, name, text_color = isLeader ? BEST_COLOR : VALUE_COLOR, text_halign = text.align_right, text_size = size.small, bgcolor = SECTION_BG, tooltip = headerDetail)
         for [row, value] in asset.values
-            string displayValue = row == 6 ? dipFrequencyText(asset.dipCount, value, asset.yearsPerDip) : formatPercent(value)
-            table.cell(panel, column, firstRow + row + 1, displayValue, text_color = comparisonColor(assets, asset, row), text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = comparisonDetail(asset, row))
+            string displayValue = switch row
+                ROW_DIPS => dipFrequencyText(asset.dipCount, value, asset.yearsPerDip)
+                ROW_OPPORTUNITY => formatOpportunity(value)
+                => formatPercent(value)
+            table.cell(panel, column, firstRow + row + 1, displayValue, text_color = comparisonColor(assets, asset, row), text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = comparisonDetail(asset, row, leaderDetail))
 
 string panelPosition = switch panelCorner
     "Top left" => position.top_left
@@ -414,7 +524,7 @@ string panelPosition = switch panelCorner
 
 bool dipsPanel = supportedChart and showDips
 int comparisonFirstRow = panelCorner == "Top right" ? 1 : 0
-int panelRows = not supportedChart ? 1 : comparisonPanel ? 8 + comparisonFirstRow : dipsPanel ? (orderedThresholds ? 6 : 3) : 7
+int panelRows = not supportedChart ? 1 : comparisonPanel ? ROW_OPPORTUNITY + 2 + comparisonFirstRow : dipsPanel ? (orderedThresholds ? 6 : 3) : 7
 int panelColumns = comparisonPanel ? 2 + extraSymbols.size() : dipsPanel ? 2 : 4
 var table panel = table.new(panelPosition, panelColumns, panelRows, bgcolor = comparisonPanel ? na : PANEL_BG, frame_color = SECTION_BG, frame_width = comparisonPanel ? 0 : 1)
 if barstate.isfirst
