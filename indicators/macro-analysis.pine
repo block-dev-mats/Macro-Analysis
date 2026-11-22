@@ -7,6 +7,9 @@ const float DAYS_PER_YEAR = 365.25
 // predecessor of the oldest target even when there are no sessions near it.
 const int PERIOD_HISTORY_SIZE = 4096
 const string SESSION_ZONE = "UTC+0"
+const int OPPORTUNITY_LAG_DAYS = 4
+// The cutoff and its chosen close can each be up to four calendar days back.
+const int RECENT_PEAKS_SIZE = 2 * OPPORTUNITY_LAG_DAYS + 1
 
 const color PANEL_BG = #171B23
 const color SECTION_BG = #29323F
@@ -69,6 +72,7 @@ changePercent(float value, float reference) =>
 type PriceHistory
     array<int> sessionDays
     array<float> sessionCloses
+    array<float> recentPeaks
     int sessionCount = 0
     float firstClose = na
     int firstDay = na
@@ -80,7 +84,7 @@ type PriceHistory
     bool missingFx = false
 
 newPriceHistory() =>
-    PriceHistory.new(array.new<int>(PERIOD_HISTORY_SIZE), array.new<float>(PERIOD_HISTORY_SIZE))
+    PriceHistory.new(array.new<int>(PERIOD_HISTORY_SIZE), array.new<float>(PERIOD_HISTORY_SIZE), array.new<float>(RECENT_PEAKS_SIZE))
 
 method addClose(PriceHistory history, int day, float price) =>
     int slot = history.sessionCount % PERIOD_HISTORY_SIZE
@@ -97,6 +101,8 @@ method addClose(PriceHistory history, int day, float price) =>
         history.peakClose := math.max(nz(history.peakClose, price), price)
         float drawdown = changePercent(price, history.peakClose)
         history.worstDrawdown := math.min(nz(history.worstDrawdown, drawdown), drawdown)
+    if showCompare
+        history.recentPeaks.set((history.sessionCount - 1) % RECENT_PEAKS_SIZE, history.peakClose)
 
 priceRatio(PriceHistory history) =>
     history.lastDay > history.firstDay ? history.lastClose / history.firstClose : na
@@ -210,7 +216,7 @@ yearsEarlier(int sessionDay, int yearsBack) =>
         targetDay := 28
     timestamp(SESSION_ZONE, targetYear, targetMonth, targetDay, 0, 0)
 
-referenceAt(PriceHistory history, int target) =>
+referenceIndex(PriceHistory history, int target) =>
     int oldest = math.max(0, history.sessionCount - PERIOD_HISTORY_SIZE)
     int startIndex = oldest
     int endIndex = history.sessionCount
@@ -221,7 +227,10 @@ referenceAt(PriceHistory history, int target) =>
             startIndex := mid + 1
         else
             endIndex := mid
-    int slot = startIndex > oldest ? (startIndex - 1) % PERIOD_HISTORY_SIZE : na
+    startIndex > oldest ? startIndex - 1 : na
+
+referenceAt(PriceHistory history, int target) =>
+    int slot = referenceIndex(history, target) % PERIOD_HISTORY_SIZE
     // Keep invalid bars in the search so an unknown reference cannot be skipped.
     [na(slot) ? na : history.sessionDays.get(slot), na(slot) ? na : history.sessionCloses.get(slot)]
 
@@ -303,6 +312,55 @@ periodCagr(int start, float initial, int finish, float finalPrice) =>
     float years = (finish - start) / MS_PER_DAY / DAYS_PER_YEAR
     years > 0 ? 100 * (math.pow(finalPrice / initial, 1.0 / years) - 1) : na
 
+opportunityIndex(float quality, float currentDD) =>
+    float discount = -currentDD
+    quality > 0 and discount > 0 and discount < 100 ? quality * discount / (100 - discount) : na
+
+type OpportunitySnapshot
+    int cutoff
+    int endDay
+    int ref3
+    int ref5
+    float quality
+    float drawdown
+    float score
+
+recentSession(int day, int target) =>
+    not na(day) and day <= target and day >= target - OPPORTUNITY_LAG_DAYS * MS_PER_DAY
+
+opportunityAt(PriceHistory prices, int cutoff) =>
+    OpportunitySnapshot snapshot = na
+    int endIndex = referenceIndex(prices, cutoff)
+    if not na(endIndex) and prices.sessionCount - endIndex <= RECENT_PEAKS_SIZE
+        int endSlot = endIndex % PERIOD_HISTORY_SIZE
+        int endDay = prices.sessionDays.get(endSlot)
+        float endPrice = prices.sessionCloses.get(endSlot)
+        if recentSession(endDay, cutoff) and not na(endPrice)
+            int target3 = yearsEarlier(cutoff, 3)
+            int target5 = yearsEarlier(cutoff, 5)
+            [ref3, price3] = referenceAt(prices, target3)
+            [ref5, price5] = referenceAt(prices, target5)
+            if recentSession(ref3, target3) and recentSession(ref5, target5)
+                float quality = 0.7 * periodCagr(ref3, price3, endDay, endPrice) + 0.3 * periodCagr(ref5, price5, endDay, endPrice)
+                float drawdown = changePercent(endPrice, prices.recentPeaks.get(endIndex % RECENT_PEAKS_SIZE))
+                float score = opportunityIndex(quality, drawdown)
+                if not na(score)
+                    snapshot := OpportunitySnapshot.new(cutoff, endDay, ref3, ref5, quality, drawdown, score)
+    snapshot
+
+recentOpportunities(PriceHistory prices, int anchor) =>
+    array<OpportunitySnapshot> snapshots = na
+    if recentSession(prices.lastDay, anchor) and not prices.missingFx
+        snapshots := array.new<OpportunitySnapshot>()
+        // Transfer only this bounded set, and only near the latest session.
+        for offset = 0 to OPPORTUNITY_LAG_DAYS
+            int cutoff = anchor - offset * MS_PER_DAY
+            if cutoff <= prices.lastDay
+                OpportunitySnapshot snapshot = opportunityAt(prices, cutoff)
+                if not na(snapshot) and recentSession(snapshot.endDay, anchor)
+                    snapshots.push(snapshot)
+    snapshots
+
 comparisonMetrics(PriceHistory prices, DipHistory dips, int oneYear, int threeYears, int fiveYears, bool useSEK) =>
     [ref1, close1] = referenceForAnchor(prices, oneYear)
     [ref3, close3] = referenceForAnchor(prices, threeYears)
@@ -311,14 +369,14 @@ comparisonMetrics(PriceHistory prices, DipHistory dips, int oneYear, int threeYe
     [rate, interval] = dipRates(count, dips.observedDays, prices.firstDay)
     bool history3 = prices.lastDay > threeYears
     bool history5 = prices.lastDay > fiveYears
-    // Scalar output keeps the source history and episode state in their own context.
+    // Price and dip histories stay in their own context.
     [useSEK ? currency.SEK : syminfo.currency, prices.firstDay, prices.lastDay, ref1, ref3, ref5,
      count, dips.observedDays, dips.invalidBars, prices.missingFx,
      annualizedReturn(prices), prices.lastDay > oneYear ? changePercent(prices.lastClose, close1) : na,
      history3 ? changePercent(prices.lastClose, close3) : na, history5 ? changePercent(prices.lastClose, close5) : na,
      changePercent(prices.lastClose, prices.peakClose), maximumDrawdown(prices), changePercent(prices.lastClose, dips.top), rate, interval,
      history3 ? periodCagr(ref3, close3, prices.lastDay, prices.lastClose) : na,
-     history5 ? periodCagr(ref5, close5, prices.lastDay, prices.lastClose) : na]
+     history5 ? periodCagr(ref5, close5, prices.lastDay, prices.lastClose) : na, recentOpportunities(prices, comparisonAnchor)]
 
 remoteComparison(float reversalPct, int oneYear, int threeYears, int fiveYears, bool useSEK, float price, bool missingFx, int previousDay, float previousPrice, bool previousFxMissing) =>
     var PriceHistory prices = newPriceHistory()
@@ -363,16 +421,12 @@ type ComparisonColumn
     float cagr5
     float quality
     array<float> values
+    array<OpportunitySnapshot> opportunities
 
-opportunityIndex(float quality, float currentDD) =>
-    float discount = -currentDD
-    quality > 0 and discount > 0 and discount < 100 ? quality * discount / (100 - discount) : na
-
-comparisonColumn(string symbol, string quoteCurrency, int start, int finish, int ref1, int ref3, int ref5, int dipCount, int observed, int invalid, bool missingFx, float cagr, float ret1, float ret3, float ret5, float currentDD, float maxDD, float activeDip, float rate, float interval, float cagr3, float cagr5) =>
+comparisonColumn(string symbol, string quoteCurrency, int start, int finish, int ref1, int ref3, int ref5, int dipCount, int observed, int invalid, bool missingFx, float cagr, float ret1, float ret3, float ret5, float currentDD, float maxDD, float activeDip, float rate, float interval, float cagr3, float cagr5, array<OpportunitySnapshot> opportunities) =>
     float quality = missingFx ? na : 0.7 * cagr3 + 0.3 * cagr5
-    float score = opportunityIndex(quality, currentDD)
-    array<float> values = missingFx ? array.new<float>(ROW_OPPORTUNITY + 1) : array.from(cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, score)
-    ComparisonColumn.new(symbol, quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, interval, cagr3, cagr5, quality, values)
+    array<float> values = missingFx ? array.new<float>(ROW_OPPORTUNITY) : array.from(cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate)
+    ComparisonColumn.new(symbol, quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, interval, cagr3, cagr5, quality, values, opportunities)
 
 canonicalSymbol(string tickerId) =>
     str.replace_all(ticker.standard(tickerId), "_DLY:", ":")
@@ -388,17 +442,17 @@ if comparisonPanel
             string standardSymbol = canonicalSymbol(symbol)
             if enabled.get(index) and symbol != "" and standardSymbol != chartSymbol and not extraSymbols.includes(standardSymbol)
                 extraSymbols.push(standardSymbol)
-    [quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5] = comparisonMetrics(chartPrices, chartDips, oneYearTarget, threeYearTarget, fiveYearTarget, compareInSEK)
+    [quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5, opportunities] = comparisonMetrics(chartPrices, chartDips, oneYearTarget, threeYearTarget, fiveYearTarget, compareInSEK)
     if barstate.islast
         columns.clear()
-        columns.push(comparisonColumn(canonicalSymbol(syminfo.tickerid), quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5))
+        columns.push(comparisonColumn(canonicalSymbol(syminfo.tickerid), quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5, opportunities))
 if comparisonPanel
     for symbol in extraSymbols
-        [quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5] = request.security(symbol, "1D",
+        [quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5, opportunities] = request.security(symbol, "1D",
              remoteComparison(reversal, oneYearTarget, threeYearTarget, fiveYearTarget, compareInSEK, comparisonClose, comparisonFxMissing, time_tradingday[1], comparisonClose[1], comparisonFxMissing[1]),
              lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
         if barstate.islast
-            columns.push(comparisonColumn(symbol, quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5))
+            columns.push(comparisonColumn(symbol, quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5, opportunities))
 
 comparisonStart(ComparisonColumn asset, int row) =>
     switch row
@@ -434,35 +488,86 @@ comparisonColor(array<ComparisonColumn> assets, ComparisonColumn asset, int row)
             result := rounded == lowest ? LOW_COLOR : rounded == highest ? BEST_COLOR : VALUE_COLOR
     result
 
-opportunityLeader(array<ComparisonColumn> assets) =>
-    int firstCandidate = na
-    int bestCandidate = na
-    float highest = na
-    int eligibleCount = 0
-    bool tied = false
-    bool compatible = true
-    bool missingFx = false
-    for [index, asset] in assets
-        missingFx := missingFx or asset.missingFx
-        float score = asset.values.get(ROW_OPPORTUNITY)
-        if not na(score)
-            eligibleCount += 1
-            if na(firstCandidate)
-                firstCandidate := index
-            else
-                ComparisonColumn first = assets.get(firstCandidate)
-                compatible := compatible and sameComparisonDateAndCurrency(first, asset) and first.ref3 == asset.ref3 and first.ref5 == asset.ref5
-            float rounded = math.round(score, 1)
-            if na(highest) or rounded > highest
-                bestCandidate := index
-                highest := rounded
-                tied := false
-            else if rounded == highest
-                tied := true
-    string detail = missingFx ? "No leader: required SEK rates are unavailable." : eligibleCount < 2 ? "No leader: at least two eligible symbols are required." : not compatible ? "No leader: eligible symbols have different currencies or session dates." : tied ? "No leader: the highest displayed score is tied." : "★ marks the highest comparable score."
-    [not missingFx and eligibleCount >= 2 and compatible and not tied ? bestCandidate : na, detail]
+opportunityForCutoff(ComparisonColumn asset, int cutoff) =>
+    OpportunitySnapshot selected = na
+    if not na(asset.opportunities)
+        for snapshot in asset.opportunities
+            if snapshot.cutoff == cutoff
+                selected := snapshot
+                break
+    selected
 
-comparisonDetail(ComparisonColumn asset, int row, string leaderDetail) =>
+eligibleOpportunity(ComparisonColumn asset, int anchor) =>
+    not asset.missingFx and recentSession(asset.lastDay, anchor) and not na(opportunityForCutoff(asset, asset.lastDay))
+
+type OpportunityGroup
+    int cutoff = na
+    int count = 0
+    float lowest = na
+    float highest = na
+    int leader = na
+
+opportunityGroup(array<ComparisonColumn> assets, string quoteCurrency, int anchor) =>
+    OpportunityGroup best = OpportunityGroup.new()
+    for offset = 0 to OPPORTUNITY_LAG_DAYS
+        int cutoff = anchor - offset * MS_PER_DAY
+        OpportunityGroup candidate = OpportunityGroup.new(cutoff)
+        for [index, asset] in assets
+            // A fresh qualified close at or after the cutoff verifies coverage.
+            if asset.currency == quoteCurrency and asset.lastDay >= cutoff and eligibleOpportunity(asset, anchor)
+                OpportunitySnapshot snapshot = opportunityForCutoff(asset, cutoff)
+                if not na(snapshot)
+                    float rounded = math.round(snapshot.score, 1)
+                    candidate.count += 1
+                    candidate.lowest := math.min(nz(candidate.lowest, rounded), rounded)
+                    if na(candidate.highest) or rounded > candidate.highest
+                        candidate.highest := rounded
+                        candidate.leader := index
+                    else if rounded == candidate.highest
+                        candidate.leader := na
+        // Prefer the most participants, then the latest cutoff. Scores never choose the date.
+        if candidate.count > best.count
+            best := candidate
+    best
+
+opportunityGroups(array<ComparisonColumn> assets, int anchor) =>
+    map<string, OpportunityGroup> groups = map.new<string, OpportunityGroup>()
+    int leader = na
+    int comparableGroups = 0
+    for asset in assets
+        if not na(asset.currency) and asset.currency != "" and not groups.contains(asset.currency)
+            OpportunityGroup group = opportunityGroup(assets, asset.currency, anchor)
+            groups.put(asset.currency, group)
+            if group.count >= 2
+                comparableGroups += 1
+                leader := group.leader
+    [groups, comparableGroups == 1 ? leader : na, comparableGroups]
+
+opportunityColor(OpportunityGroup group, OpportunitySnapshot snapshot) =>
+    color result = na(snapshot) ? MUTED_COLOR : VALUE_COLOR
+    if not na(snapshot) and group.count >= 2 and group.lowest < group.highest
+        float rounded = math.round(snapshot.score, 1)
+        result := rounded == group.highest ? BEST_COLOR : rounded == group.lowest ? LOW_COLOR : VALUE_COLOR
+    result
+
+opportunityDetail(ComparisonColumn asset, OpportunityGroup group, OpportunitySnapshot snapshot, int comparableGroups) =>
+    string detail = "Historical heuristic · Quality (70% 3Y CAGR + 30% 5Y CAGR) × recovery upside to the historical high."
+    if na(snapshot)
+        string reason = asset.missingFx ? "SEK conversion incomplete." : not recentSession(asset.lastDay, comparisonAnchor) ? "No confirmed close within the last four calendar days." : "Positive Quality, a drawdown and valid 3Y/5Y references are required at the cutoff."
+        detail += "\n" + reason
+    else
+        detail += "\nAs of " + formatDay(snapshot.cutoff) + " · " + asset.currency + " · Close " + formatDay(snapshot.endDay)
+        detail += "\nReferences: " + formatDay(snapshot.ref3) + " (3Y) · " + formatDay(snapshot.ref5) + " (5Y)"
+        detail += "\nQuality " + formatPercent(snapshot.quality) + " · DD " + formatPercent(snapshot.drawdown)
+        if group.count < 2
+            detail += "\nAt least two comparable candidates are required."
+        else if comparableGroups > 1
+            detail += "\nColors compare within currency. Multiple groups have eligible candidates."
+        else if na(group.leader)
+            detail += "\nThe highest displayed score is tied."
+    detail
+
+comparisonDetail(ComparisonColumn asset, int row) =>
     string dates = "Loaded history: " + formatPeriod(asset.firstDay, asset.lastDay) + "."
     if asset.missingFx
         dates += "\nSEK conversion is missing for at least one valid close. Choose Native to view the series in its own currency."
@@ -474,7 +579,6 @@ comparisonDetail(ComparisonColumn asset, int row, string leaderDetail) =>
         ROW_MAX_DD => "Lowest observed drawdown over the loaded history. A value closer to zero ranks higher."
         ROW_ACTIVE_DIP => "Latest confirmed close relative to the local episode peak."
         ROW_DIPS => na(asset.dipCount) ? "Daily history unavailable." : str.tostring(asset.dipCount) + " completed dips ≥10% · " + str.tostring(asset.observedDays, "#,##0") + " observed calendar days."
-        ROW_OPPORTUNITY => "Historical heuristic · Quality (70% 3Y CAGR + 30% 5Y CAGR) × recovery upside.\nRecovery upside is the price increase to the historical high.\nRequires positive Quality and a drawdown.\nQuality: " + formatPercent(asset.quality) + ".\n" + leaderDetail
         => "Annualized price return using elapsed calendar days."
     if row >= ROW_1Y and row <= ROW_5Y
         detail += "\nLatest confirmed: " + formatDay(asset.lastDay) + " · Shared end target: " + formatDay(comparisonAnchor) + "."
@@ -491,7 +595,7 @@ formatOpportunity(float value) =>
 
 renderComparison(table panel, array<ComparisonColumn> assets, int firstRow) =>
     var array<string> labels = array.from("CAGR", "1Y", "3Y", "5Y", "Current DD", "Max DD", "Active Dip", "Dips ≥10%", "Opportunity")
-    [leader, leaderDetail] = opportunityLeader(assets)
+    [groups, leader, comparableGroups] = opportunityGroups(assets, comparisonAnchor)
     if firstRow > 0
         // Leave space for TradingView's chart controls in the top-right corner.
         table.cell(panel, 0, 0, " ", text_size = size.small)
@@ -501,20 +605,23 @@ renderComparison(table panel, array<ComparisonColumn> assets, int firstRow) =>
     for [index, asset] in assets
         int column = index + 1
         array<string> parts = str.split(asset.tickerId, ":")
+        OpportunityGroup group = na(asset.currency) ? na : groups.get(asset.currency)
+        OpportunitySnapshot snapshot = na
+        if not na(group) and asset.lastDay >= group.cutoff and eligibleOpportunity(asset, comparisonAnchor)
+            snapshot := opportunityForCutoff(asset, group.cutoff)
         bool isLeader = index == leader
         string name = parts.last() + (isLeader ? " ★" : "")
         string headerDetail = asset.tickerId + (na(asset.currency) ? "" : " · " + asset.currency)
         headerDetail += "\nLatest confirmed: " + formatDay(asset.lastDay) + ".\nLoaded history: " + formatPeriod(asset.firstDay, asset.lastDay) + "."
         headerDetail += "\nPrice adjustments depend on the symbol's feed."
         if isLeader
-            headerDetail += "\nHighest comparable Opportunity."
+            headerDetail += "\nHighest comparable Opportunity as of " + formatDay(group.cutoff) + "."
         table.cell(panel, column, firstRow, name, text_color = isLeader ? BEST_COLOR : VALUE_COLOR, text_halign = text.align_right, text_size = size.small, bgcolor = SECTION_BG, tooltip = headerDetail)
         for [row, value] in asset.values
-            string displayValue = switch row
-                ROW_DIPS => dipFrequencyText(asset.dipCount, value, asset.yearsPerDip)
-                ROW_OPPORTUNITY => formatOpportunity(value)
-                => formatPercent(value)
-            table.cell(panel, column, firstRow + row + 1, displayValue, text_color = comparisonColor(assets, asset, row), text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = comparisonDetail(asset, row, leaderDetail))
+            string displayValue = row == ROW_DIPS ? dipFrequencyText(asset.dipCount, value, asset.yearsPerDip) : formatPercent(value)
+            table.cell(panel, column, firstRow + row + 1, displayValue, text_color = comparisonColor(assets, asset, row), text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = comparisonDetail(asset, row))
+        string score = na(snapshot) ? "N/A" : formatOpportunity(snapshot.score)
+        table.cell(panel, column, firstRow + ROW_OPPORTUNITY + 1, score, text_color = opportunityColor(group, snapshot), text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = opportunityDetail(asset, group, snapshot, comparableGroups))
 
 string panelPosition = switch panelCorner
     "Top left" => position.top_left

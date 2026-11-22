@@ -1,5 +1,16 @@
 # Status
 
+## P07
+
+**Opportunity** räknar om Quality och drawdown vid ett gemensamt bekräftat jämförelsedatum per valuta. P06 krävde identiska sessionsdatum och kunde stoppa hela rankningen vid saknad SEK-kurs i en kolumn. P07 accepterar olika faktiska referenssessioner för samma kalendermål och låter giltiga kandidater bilda en egen jämförelsegrupp. [Metod och färger](METRICS.md#opportunity)
+
+### Verifiering den 22 november 2026
+
+- Slutkällan kompilerades från VS Code och sparades som revision 26 i den befintliga privata indikatorn. På Avanza-flikens **SXR8 1D** visade Compare i **SEK** `ACWI ★` i grönt på det gemensamma datumet **2026-11-19**. Opportunity var 0,9 för SXR8, 1,0 för ACWI, 0,8 för EUNL, 0,9 för VWCE och 0,3 för XACTHDIV. ACWI:s värde var grönt och XACTHDIV:s rött. I **Native** färgsattes grupperna SEK och EUR var för sig. ACWI var ensam i USD, med neutral poäng, och vyn hade ingen stjärna.
+- Syntetiska Pine-kontroller använde produktionsfunktionerna och förväntade poäng från en oberoende beräkning. De passerade för helgdagar, skilda referens- och slutdatum, en senare topp utanför jämförelsedatumet, saknad FX, kort och gammal historik, oavgjort, giltig ledare med övriga kandidater uteslutna samt Opportunity-färger. Övriga Compare-rader följde tidigare regler i TradingView. Overview, Dips och SMA 200D stämdes av på SXR8. 1W visade instruktionen att byta till 1D.
+- Fem kolumner kördes med **496,5 ms** total tid enligt Pine Profiler. Den externa statistikförfrågan tog **382,4 ms** över **29 495** exekveringar. P07 lägger till högst fem små daterade Opportunity-resultat i den befintliga förfrågan. Antalet förfrågningar är oförändrat. [Pines resursgränser](https://www.tradingview.com/pine-script-docs/writing/limitations/)
+- Verifieringen i Desktop gjordes vid stängd marknad. Fördröjningen när dessa börser stänger i realtid och vid långa sammanhängande marknadsuppehåll återstår att följa. TradingViews värddiagram kan senarelägga när en extern stängning blir synlig. Datumet i Opportunity-tooltipen anger underlaget som faktiskt användes.
+
 ## P06
 
 Compare har **3Y** och **Opportunity**, med gemensam SEK som standard och **Native** som alternativ. 3Y- och 5Y-tooltipen visar kalenderbaserad CAGR. En stjärna vid symbolen markerar en unik högsta poäng när de kvalificerade symbolerna har jämförbara datum och valuta. [Metod och färger](METRICS.md#opportunity)
