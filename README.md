@@ -14,7 +14,9 @@ Med **Panel View → Compare** jämför du chartsymbolen med upp till fyra extra
 
 **Compare currency** väljer gemensam SEK eller varje symbols egen valuta (**Native**). **Opportunity** väger samman 3Y och 5Y CAGR med avståndet tillbaka till tidigare pristopp vid ett gemensamt datum per valuta. En grön stjärna visas när det finns en enda jämförbar grupp och en entydig ledare. [Beräkningsmetod](docs/METRICS.md#opportunity)
 
-Mätperioderna bygger på bekräftade dagsstängningar i den historik TradingView tillhandahåller. [Verifiering och begränsningar](docs/STATUS.md#p07)
+**Dip Rarity** visar hur stor andel av de senaste fem årens dagsstängningar låg närmare sin historiska topp än vid jämförelsedatumet. [Beräkningsmetod](docs/METRICS.md#dip-rarity)
+
+Mätperioderna bygger på bekräftade dagsstängningar i den historik TradingView tillhandahåller. [Verifiering och begränsningar](docs/STATUS.md#p08)
 
 - Produktmål, användningsflöde och avgränsning. [Projektbeskrivning](docs/PROJECT_BRIEF.md)
 - Datakrav, mått och räkneexempel. [Måttdefinitioner](docs/METRICS.md)

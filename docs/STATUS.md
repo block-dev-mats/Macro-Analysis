@@ -1,5 +1,17 @@
 # Status
 
+## P08
+
+Compare visar en neutral rad för **Dip Rarity**, andelen dagsstängningar med grundare ATH-baserad drawdown än vid jämförelsedatumet. Urvalet omfattar fem kalenderår och följer Opportunity-datumet per valuta. [Metod och datakrav](METRICS.md#dip-rarity)
+
+### Verifiering den 22 november 2026
+
+- TradingView Desktop kompilerade slutkällan från VS Code som revision **27** av den befintliga privata indikatorn. Alla fem symbolerna visade Dip Rarity på **SXR8 1D** med samma Opportunity-poäng, stjärna och övriga mått som i P07. Avanza-layouten är sparad med Compare i SEK. Dip Rarity-cellerna var neutrala i både SEK och Native.
+- I SEK, med gemensamt datum **2026-11-19**, visade SXR8 **61,7 %**, ACWI **85,0 %**, EUNL **69,4 %**, VWCE **80,1 %** och XACTHDIV **33,0 %**. ACWI-tooltipen visade perioden från 2021-11-19 och **188 av 1 255** dagar med minst lika djup drawdown. I Native var värdena 61,7 %, 66,7 %, 72,7 %, 78,3 % och 33,0 %. EUR använde 2026-11-20 medan SEK och USD använde 2026-11-19.
+- Pine-tester med produktionsfunktionerna verifierade 50 av 1 000 dagar, lika djupa drawdowns, ny ATH, djupaste drawdown, helgdag, skottdag, kort och explicit ogiltig historik, saknad FX, oförändrad Opportunity-ledare och att senare priser inte ändrade ett tidigare resultat. En separat Python-beräkning gav **764 av 1 827** dagar för en syntetisk serie med 5 200 stängningar. Pine gav samma resultat efter att den cirkulära historikbufferten fyllts.
+- Pine Profiler mätte **421,9 ms** totalt i en femsymbolskörning i SEK, med **327,2 ms** över **29 495** exekveringar på den externa statistikförfrågan. Koden sparar ett drawdownvärde per bekräftad session i den befintliga historikbufferten. För färska jämförelsedatum skannas enbart femårsperioden. Den befintliga förfrågan returnerar två extra räknare per daterat resultat. [Pines resursgränser](https://www.tradingview.com/pine-script-docs/writing/limitations/)
+- Desktop-testet gjordes när marknaderna var stängda. Måttet använder laddade sessioner. TradingView ger inget säkert sätt att skilja en helt utebliven bar från ett börsuppehåll utifrån prisserien.
+
 ## P07
 
 **Opportunity** räknar om Quality och drawdown vid ett gemensamt bekräftat jämförelsedatum per valuta. P06 krävde identiska sessionsdatum och kunde stoppa hela rankningen vid saknad SEK-kurs i en kolumn. P07 accepterar olika faktiska referenssessioner för samma kalendermål och låter giltiga kandidater bilda en egen jämförelsegrupp. [Metod och färger](METRICS.md#opportunity)
