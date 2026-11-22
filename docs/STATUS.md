@@ -1,5 +1,20 @@
 # Status
 
+## P04
+
+**Panel View → Compare** visar chartsymbolen och upp till fyra extra symboler. Förvalen är **ACWI**, **EUNL**, **VWCE** och **XACTHDIV**. Tabellen visar CAGR, 1Y, 5Y, Current DD, Max DD, Active Dip och historisk frekvens för avslutade nedgångar på minst 10 %. [Jämförelseregler](METRICS.md#symboljämförelse)
+
+### Verifiering den 22 november 2026
+
+- Slutkällan kompilerades och sparades från VS Code i den befintliga privata Macro Analysis-indikatorn i TradingView Desktop. Avanza-fliken sparades på **SXR8, 1D, SEK** med Compare valt, fyra fondförval aktiva och SMA 200D synlig.
+- Overview och Dips stämdes av för SXR8, ACWI, EUNL, VWCE, XACTHDIV, BTCUSDT och PUMPU. CAGR, drawdowns, Active Dip och ≥10 %-frekvenser stämde vid samma bekräftade slutdatum och prisserie. På SXR8 behöll Overview till exempel 797,60 % Return, 14,54 % CAGR, −8,26 % Current DD, −31,66 % Max DD, 2,51 % MA Distance och 85,28 % Above MA. Dips behöll −8,26 % Active Dip och frekvenserna från P03. Fem kolumner fungerade även med utjämnad 200W SMA.
+- EUNL och VWCE delade datum och EUR för 1Y och 5Y, så EUNL:s 13,34 % och 55,10 % var gröna och VWCE:s 13,17 % och 51,84 % röda. CAGR och Max DD var neutrala när historiklängderna skilde sig. Current DD, Active Dip och dipfrekvens förblev neutrala. XACTHDIV:s 1Y hade slutdatum 2026-11-19 på SXR8 trots samma visade valuta. På BTCUSDT nådde XACTHDIV 2026-11-20 och stämde mot den fristående vyn med 6,07 % CAGR och −3,21 % Active Dip. Skillnader i 1Y och 5Y mellan vyerna följer deras olika kalendermål.
+- Fem symboler med både börs- och kryptokalendrar kördes. På söndagen den 22 november gav PUMPU 2026-11-21 som slutdatum på BTCUSDT, −45,73 % Active Dip och `N/A` för 1Y, 5Y och dipfrekvens, i linje med den fristående vyn. På det helgstängda SXR8 slutade samma externa serie den 20 november. Ändringar i den öppna kryptobarens pris påverkade inte måtten.
+- En avstängd symbol försvann och övriga värden stod kvar. En symbol som även var chartsymbol visades en gång, inklusive EUNL med fördröjd Xetra-feed. SXR8 på 1W visade **Use a 1D chart** utan jämförelse eller SMA-linje. En lokal syntetisk referenskontroll i Python täckte fem historiker, kalendergränser, ogiltig referens, övergång till nytt måldatum, ringbuffert och färggrupper.
+- Pine Profiler mätte en körning med slutkällan och fem symboler på SXR8 till **359,9 ms**. Raden för den externa begäran stod för **258,1 ms** och **29 492** exekveringar enligt profileraren. Compare använder högst fyra externa dagliga kontext plus ett valfritt SMA-kontext. Varje jämförelsebegäran skickar 16 skalära fält utan en kopia av historiken. Ingen minnesgräns observerades under körningarna. [Pines resursgränser](https://www.tradingview.com/pine-script-docs/writing/limitations/)
+
+Minsta nästa steg är att följa en verklig sessionsövergång för Xetra, Stockholm och USA på samma värdchart och kontrollera när respektive bekräftad stängning blir tillgänglig.
+
 ## P03
 
 **Panel View → Dips** visar Active Dip och historisk frekvens för bekräftat avslutade nedgångsepisoder. Varje avslut startar om den lokala referensen. Reversal och de fyra trösklarna är valbara. Overview visar P02-måtten. [Beslutad episodmetod](METRICS.md#lokala-nedgångsepisoder-och-frekvens)
@@ -14,10 +29,6 @@
 - Nio syntetiska sekvenser passerade i Pine och i en oberoende Python-beräkning med exakta rationella tal. De täckte separata och ofullständiga episoder, exakt reversal och tröskel, upprepade toppar och bottnar, återtagen topp och explicita dataluckor. Pine kontrollerade även 365/366 dagar, kort historik, noll episoder och visning i år per episod. [Syntetiska fall](METRICS.md#deterministiska-p03-exempel)
 
 Frekvenserna beskriver laddade data. En verklig sessionsstängning där en pågående episod avslutades följdes inte.
-
-### Nästa steg
-
-Avgränsa P04 till varaktighet för de lokala episoderna. Mät kalenderdagar från topp till botten och från botten till bekräftat avslut, och verifiera hur lika bottnar och avbrott påverkar datumen.
 
 ## P02
 

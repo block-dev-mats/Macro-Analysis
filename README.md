@@ -1,6 +1,6 @@
 # Macro Analysis
 
-Macro Analysis visar långsiktig prisutveckling, drawdowns och beteende kring ett valbart SMA för den aktuella symbolen i TradingView.
+Macro Analysis visar långsiktig prisutveckling, drawdowns och beteende kring ett valbart SMA i TradingView.
 
 Öppna en vanlig prisgraf på **1D**. Klistra in [Pine v6-källan](indicators/macro-analysis.pine) i **Pine Editor** och välj **Update on chart** för en befintlig instans eller **Add to chart** första gången. På raden **SMA** väljer du längd och **Daily**, **Weekly** eller **Monthly**. Standard är 200 dagar. Kryssrutan på samma rad döljer eller visar linjen och behåller statistiken.
 
@@ -10,7 +10,9 @@ Panelen visar prisavkastning sedan start och för 1, 3, 5 och 10 kalenderår, CA
 
 Med **Panel View → Dips** visas aktuell nedgång från den lokala toppen och historisk frekvens för återhämtade nedgångsepisoder. Trösklar och återhämtningskrav kan ställas in. Antal och täckning visas i tooltips.
 
-Mätperioden slutar vid den senaste bekräftade dagsbaren. Resultaten bygger på den historik som TradingView har laddat och chartens prisserie, inklusive eventuella val av valuta och justeringar. [Verifiering och nästa steg](docs/STATUS.md#p03)
+Med **Panel View → Compare** jämför du chartsymbolen med upp till fyra extra symboler. Förvalen är ACWI, EUNL och VWCE från de andra graferna i Avanza-fliken samt XACT Norden Högutdelande (XACTHDIV). Kryssrutan på varje symbolrad styr om den visas. Kolumnernas tooltips visar valuta och faktiska sessionsdatum. [Jämförelseregler och datatäckning](docs/METRICS.md#symboljämförelse)
+
+Mätperioderna bygger på bekräftade dagsstängningar i den historik TradingView tillhandahåller. [Verifiering och nästa steg](docs/STATUS.md#p04)
 
 - Produktmål, användningsflöde och avgränsning. [Projektbeskrivning](docs/PROJECT_BRIEF.md)
 - Datakrav, mått och räkneexempel. [Måttdefinitioner](docs/METRICS.md)

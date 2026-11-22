@@ -13,19 +13,30 @@ const color SECTION_BG = #29323F
 const color LABEL_COLOR = #C4CEDA
 const color VALUE_COLOR = #F2F5F9
 const color MUTED_COLOR = #9EAFC2
+const color BEST_COLOR = #82D6A9
+const color LOW_COLOR = #F3A0A0
 
 int smaLength = input.int(200, "SMA", minval = 2, inline = "sma")
 string smaTimeframe = input.string("Daily", "", options = ["Daily", "Weekly", "Monthly"], inline = "sma")
 bool showSma = input.bool(true, "", inline = "sma", tooltip = "Length, timeframe, and whether to show the SMA line.")
 bool smoothSma = input.bool(false, "Smooth SMA", active = smaTimeframe != "Daily", tooltip = "Moves gradually to the next confirmed weekly or monthly SMA. The panel and line use the same value.")
 string panelCorner = input.string("Top right", "Panel corner", options = ["Top right", "Top left", "Bottom right", "Bottom left"])
-string panelView = input.string("Overview", "Panel View", options = ["Overview", "Dips"])
+string panelView = input.string("Overview", "Panel View", options = ["Overview", "Dips", "Compare"])
 bool showDips = panelView == "Dips"
+bool showCompare = panelView == "Compare"
 float dipFirst = input.float(5, "Dip thresholds (%)", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
 float dipSecond = input.float(10, "", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
 float dipThird = input.float(20, "", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
 float dipFourth = input.float(30, "", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips, tooltip = "Enter four thresholds in strictly increasing order.")
-float reversal = input.float(5, "Reversal %", minval = 0.01, active = showDips)
+float reversal = input.float(5, "Reversal %", minval = 0.01, active = showDips or showCompare)
+bool includeA = input.bool(true, "Symbol 1", inline = "compareA", active = showCompare)
+string symbolA = input.symbol("BATS:ACWI", "", inline = "compareA", active = showCompare and includeA)
+bool includeB = input.bool(true, "Symbol 2", inline = "compareB", active = showCompare)
+string symbolB = input.symbol("XETR:EUNL", "", inline = "compareB", active = showCompare and includeB)
+bool includeC = input.bool(true, "Symbol 3", inline = "compareC", active = showCompare)
+string symbolC = input.symbol("XETR:VWCE", "", inline = "compareC", active = showCompare and includeC)
+bool includeD = input.bool(true, "Symbol 4", inline = "compareD", active = showCompare)
+string symbolD = input.symbol("OMXSTO:XACTHDIV", "", inline = "compareD", active = showCompare and includeD)
 bool orderedThresholds = dipFirst < dipSecond and dipSecond < dipThird and dipThird < dipFourth
 bool isDaily = timeframe.isdaily and timeframe.multiplier == 1
 bool supportedChart = isDaily and chart.is_standard
@@ -36,19 +47,53 @@ validPrice(float price) =>
 
 float confirmedClose = confirmedDay ? validPrice(close) : na
 
-var float firstClose = na
-var int firstDay = na
-var float peakClose = na
-var float worstDrawdown = na
-var int validDays = 0
 var int comparableDays = 0
 var int aboveSmaDays = 0
-var array<int> sessionDays = array.new<int>(PERIOD_HISTORY_SIZE)
-var array<float> sessionCloses = array.new<float>(PERIOD_HISTORY_SIZE)
-var int sessionCount = 0
 
 changePercent(float value, float reference) =>
     100 * (value / reference - 1)
+
+type PriceHistory
+    array<int> sessionDays
+    array<float> sessionCloses
+    int sessionCount = 0
+    float firstClose = na
+    int firstDay = na
+    float peakClose = na
+    float worstDrawdown = na
+    int validDays = 0
+    int lastDay = na
+    float lastClose = na
+
+newPriceHistory() =>
+    PriceHistory.new(array.new<int>(PERIOD_HISTORY_SIZE), array.new<float>(PERIOD_HISTORY_SIZE))
+
+method addClose(PriceHistory history, int day, float price) =>
+    int slot = history.sessionCount % PERIOD_HISTORY_SIZE
+    history.sessionDays.set(slot, day)
+    history.sessionCloses.set(slot, price)
+    history.sessionCount += 1
+    history.lastDay := day
+    history.lastClose := price
+    if not na(price)
+        if na(history.firstClose)
+            history.firstClose := price
+            history.firstDay := day
+        history.validDays += 1
+        history.peakClose := math.max(nz(history.peakClose, price), price)
+        float drawdown = changePercent(price, history.peakClose)
+        history.worstDrawdown := math.min(nz(history.worstDrawdown, drawdown), drawdown)
+
+priceRatio(PriceHistory history) =>
+    history.lastDay > history.firstDay ? history.lastClose / history.firstClose : na
+
+annualizedReturn(PriceHistory history) =>
+    int days = int((history.lastDay - history.firstDay) / MS_PER_DAY)
+    float ratio = priceRatio(history)
+    not na(ratio) ? 100 * (math.pow(ratio, DAYS_PER_YEAR / days) - 1) : na
+
+maximumDrawdown(PriceHistory history) =>
+    history.validDays >= 2 ? history.worstDrawdown : na
 
 advanceDip(float top, float bottom, float price, float reversalPct) =>
     float nextTop = top
@@ -72,47 +117,41 @@ advanceDip(float top, float bottom, float price, float reversalPct) =>
             nextBottom := na
     [nextTop, nextBottom, depth]
 
-var float dipTop = na
-var float dipBottom = na
-var int previousValidDipDay = na
-var int observedDipDays = 0
-var int invalidDipBars = 0
-var int interruptedDips = 0
-var array<float> thresholds = array.from(dipFirst, dipSecond, dipThird, dipFourth)
-var array<int> dipCounts = array.new<int>(4, 0)
+type DipHistory
+    array<int> counts
+    float top = na
+    float bottom = na
+    int previousValidDay = na
+    int observedDays = 0
+    int invalidBars = 0
+    int interrupted = 0
 
-if confirmedDay and showDips
-    if na(confirmedClose)
-        invalidDipBars += 1
-        if not na(dipBottom)
-            interruptedDips += 1
-        previousValidDipDay := na
+method addDipClose(DipHistory history, int day, float price, float reversalPct, array<float> thresholds, bool countDips) =>
+    if na(price)
+        history.invalidBars += 1
+        if not na(history.bottom)
+            history.interrupted += 1
+        history.previousValidDay := na
     else
-        if not na(previousValidDipDay)
-            observedDipDays += int((time_tradingday - previousValidDipDay) / MS_PER_DAY)
-        previousValidDipDay := time_tradingday
-
-    [nextTop, nextBottom, closedDepth] = advanceDip(dipTop, dipBottom, confirmedClose, reversal)
-    dipTop := nextTop
-    dipBottom := nextBottom
-    if orderedThresholds and not na(closedDepth)
+        if not na(history.previousValidDay)
+            history.observedDays += int((day - history.previousValidDay) / MS_PER_DAY)
+        history.previousValidDay := day
+    [nextTop, nextBottom, closedDepth] = advanceDip(history.top, history.bottom, price, reversalPct)
+    history.top := nextTop
+    history.bottom := nextBottom
+    if countDips and not na(closedDepth)
         for [index, threshold] in thresholds
             if closedDepth >= threshold
-                dipCounts.set(index, dipCounts.get(index) + 1)
+                history.counts.set(index, history.counts.get(index) + 1)
+
+var PriceHistory chartPrices = newPriceHistory()
+var array<float> thresholds = showCompare ? array.from(10.0) : array.from(dipFirst, dipSecond, dipThird, dipFourth)
+var DipHistory chartDips = DipHistory.new(array.new<int>(thresholds.size(), 0))
 
 if confirmedDay
-    int slot = sessionCount % PERIOD_HISTORY_SIZE
-    sessionDays.set(slot, time_tradingday)
-    sessionCloses.set(slot, confirmedClose)
-    sessionCount += 1
-    if not na(confirmedClose)
-        if na(firstClose)
-            firstClose := confirmedClose
-            firstDay := time_tradingday
-        validDays += 1
-        peakClose := math.max(nz(peakClose, confirmedClose), confirmedClose)
-        float drawdown = changePercent(confirmedClose, peakClose)
-        worstDrawdown := math.min(nz(worstDrawdown, drawdown), drawdown)
+    chartPrices.addClose(time_tradingday, confirmedClose)
+    if showDips or showCompare
+        chartDips.addDipClose(time_tradingday, confirmedClose, reversal, thresholds, showCompare or orderedThresholds)
 
 consecutiveSma(float price, int length) =>
     // ta.sma skips na. The streak prevents its window from crossing an invalid bar.
@@ -155,20 +194,20 @@ yearsEarlier(int sessionDay, int yearsBack) =>
         targetDay := 28
     timestamp(SESSION_ZONE, targetYear, targetMonth, targetDay, 0, 0)
 
-referenceAt(int target, int count) =>
-    int oldest = math.max(0, count - PERIOD_HISTORY_SIZE)
+referenceAt(PriceHistory history, int target) =>
+    int oldest = math.max(0, history.sessionCount - PERIOD_HISTORY_SIZE)
     int startIndex = oldest
-    int endIndex = count
+    int endIndex = history.sessionCount
     // Search by chronological index and use modulo only when accessing storage.
     while startIndex < endIndex
         int mid = startIndex + int((endIndex - startIndex) / 2)
-        if sessionDays.get(mid % PERIOD_HISTORY_SIZE) <= target
+        if history.sessionDays.get(mid % PERIOD_HISTORY_SIZE) <= target
             startIndex := mid + 1
         else
             endIndex := mid
     int slot = startIndex > oldest ? (startIndex - 1) % PERIOD_HISTORY_SIZE : na
     // Keep invalid bars in the search so an unknown reference cannot be skipped.
-    [na(slot) ? na : sessionDays.get(slot), na(slot) ? na : sessionCloses.get(slot)]
+    [na(slot) ? na : history.sessionDays.get(slot), na(slot) ? na : history.sessionCloses.get(slot)]
 
 formatPercent(float value) =>
     na(value) ? "N/A" : str.tostring(value, "0.00") + "%"
@@ -189,9 +228,9 @@ metricText(table panel, int column, int row, string label, string value, string 
 metric(table panel, int column, int row, string label, float value, string tooltip) =>
     metricText(panel, column, row, label, formatPercent(value), tooltip)
 
-periodMetric(table panel, int column, int row, int yearsBack, int endDay, float endClose, int count) =>
+periodMetric(table panel, int column, int row, int yearsBack, int endDay, float endClose, PriceHistory history) =>
     int target = na(endDay) ? na : yearsEarlier(endDay, yearsBack)
-    [refDay, refClose] = referenceAt(target, count)
+    [refDay, refClose] = referenceAt(history, target)
     string detail = na(refDay) ? "Insufficient loaded history." : na(refClose) ? "Invalid reference close on " + formatDay(refDay) + "." : "From " + formatDay(refDay) + " to " + formatDay(endDay) + "."
     if na(endClose) and not na(refClose)
         detail += " Latest confirmed close unavailable."
@@ -210,8 +249,8 @@ dipRates(int count, int observedDays, int startDay) =>
 dipFrequencyText(int count, float perYear, float yearsPerDip) =>
     na(perYear) ? "N/A" : count == 0 ? "0" : perYear >= 1 ? str.tostring(perYear, "0.0") + "/y" : "1/" + str.tostring(yearsPerDip, "0.0") + "y"
 
-dipMetric(table panel, int row, float threshold, int count, int startDay, string coverage) =>
-    [perYear, yearsPerDip] = dipRates(count, observedDipDays, startDay)
+dipMetric(table panel, int row, float threshold, int count, int observedDays, int startDay, string coverage) =>
+    [perYear, yearsPerDip] = dipRates(count, observedDays, startDay)
     string detail = str.tostring(count) + " completed dips at or above this threshold."
     detail += "\n" + coverage
     if na(perYear)
@@ -223,6 +262,150 @@ dipMetric(table panel, int row, float threshold, int count, int startDay, string
     detail += "\nObserved frequency."
     metricText(panel, 0, row, "≥" + str.tostring(threshold) + "%", dipFrequencyText(count, perYear, yearsPerDip), detail)
 
+// A shared calendar target stays constant throughout historical execution.
+// Keep its predecessor as bars arrive and re-search only if the target moves.
+referenceForAnchor(PriceHistory history, int target) =>
+    var int cachedTarget = na
+    var int referenceDay = na
+    var float referenceClose = na
+    if na(cachedTarget) or target != cachedTarget
+        [day, price] = referenceAt(history, target)
+        referenceDay := day
+        referenceClose := price
+        cachedTarget := target
+    else if not na(history.lastDay) and history.lastDay <= target
+        referenceDay := history.lastDay
+        referenceClose := history.lastClose
+    [referenceDay, referenceClose]
+
+int comparisonAnchor = int(timenow / MS_PER_DAY) * MS_PER_DAY
+int oneYearTarget = yearsEarlier(comparisonAnchor, 1)
+int fiveYearTarget = yearsEarlier(comparisonAnchor, 5)
+
+comparisonMetrics(PriceHistory prices, DipHistory dips, int oneYear, int fiveYears) =>
+    [ref1, close1] = referenceForAnchor(prices, oneYear)
+    [ref5, close5] = referenceForAnchor(prices, fiveYears)
+    int count = dips.counts.get(0)
+    [rate, interval] = dipRates(count, dips.observedDays, prices.firstDay)
+    // Scalar output keeps the source history and episode state in their own context.
+    [syminfo.currency, prices.firstDay, prices.lastDay, ref1, ref5, count, dips.observedDays, dips.invalidBars,
+     annualizedReturn(prices), prices.lastDay > oneYear ? changePercent(prices.lastClose, close1) : na,
+     prices.lastDay > fiveYears ? changePercent(prices.lastClose, close5) : na,
+     changePercent(prices.lastClose, prices.peakClose), maximumDrawdown(prices), changePercent(prices.lastClose, dips.top), rate, interval]
+
+remoteComparison(float reversalPct, int oneYear, int fiveYears, int previousDay, float previousClose) =>
+    var PriceHistory prices = newPriceHistory()
+    var DipHistory dips = DipHistory.new(array.new<int>(1, 0))
+    var array<float> levels = array.from(10.0)
+    // The previous native bar is final even during a delayed feed's open bar.
+    // Include the current native bar only if historical and past its own close.
+    if not na(previousDay) and (na(prices.lastDay) or prices.lastDay < previousDay)
+        float previousPrice = validPrice(previousClose)
+        prices.addClose(previousDay, previousPrice)
+        dips.addDipClose(previousDay, previousPrice, reversalPct, levels, true)
+    if barstate.ishistory and time_close <= timenow and (na(prices.lastDay) or prices.lastDay < time_tradingday)
+        float price = validPrice(close)
+        prices.addClose(time_tradingday, price)
+        dips.addDipClose(time_tradingday, price, reversalPct, levels, true)
+    comparisonMetrics(prices, dips, oneYear, fiveYears)
+
+type ComparisonColumn
+    string tickerId
+    string currency
+    int firstDay
+    int lastDay
+    int ref1
+    int ref5
+    int dipCount
+    int observedDays
+    int invalidBars
+    float yearsPerDip
+    array<float> values
+
+canonicalSymbol(string tickerId) =>
+    str.replace_all(ticker.standard(tickerId), "_DLY:", ":")
+
+bool comparisonPanel = supportedChart and showCompare
+var array<string> extraSymbols = array.new<string>()
+var array<ComparisonColumn> columns = array.new<ComparisonColumn>()
+if comparisonPanel
+    if barstate.isfirst
+        array<string> symbols = array.from(symbolA, symbolB, symbolC, symbolD)
+        array<bool> enabled = array.from(includeA, includeB, includeC, includeD)
+        string chartSymbol = canonicalSymbol(syminfo.tickerid)
+        for [index, symbol] in symbols
+            string standardSymbol = canonicalSymbol(symbol)
+            if enabled.get(index) and symbol != "" and standardSymbol != chartSymbol and not extraSymbols.includes(standardSymbol)
+                extraSymbols.push(standardSymbol)
+    [quoteCurrency, start, finish, ref1, ref5, dipCount, observed, invalid, cagr, ret1, ret5, currentDD, maxDD, activeDip, rate, interval] = comparisonMetrics(chartPrices, chartDips, oneYearTarget, fiveYearTarget)
+    if barstate.islast
+        columns.clear()
+        columns.push(ComparisonColumn.new(canonicalSymbol(syminfo.tickerid), quoteCurrency, start, finish, ref1, ref5, dipCount, observed, invalid, interval, array.from(cagr, ret1, ret5, currentDD, maxDD, activeDip, rate)))
+if comparisonPanel
+    for symbol in extraSymbols
+        [quoteCurrency, start, finish, ref1, ref5, dipCount, observed, invalid, cagr, ret1, ret5, currentDD, maxDD, activeDip, rate, interval] = request.security(symbol, "1D", remoteComparison(reversal, oneYearTarget, fiveYearTarget, time_tradingday[1], close[1]), lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+        if barstate.islast
+            columns.push(ComparisonColumn.new(symbol, quoteCurrency, start, finish, ref1, ref5, dipCount, observed, invalid, interval, array.from(cagr, ret1, ret5, currentDD, maxDD, activeDip, rate)))
+
+comparisonColor(array<ComparisonColumn> assets, ComparisonColumn asset, int row) =>
+    float value = asset.values.get(row)
+    color result = na(value) ? MUTED_COLOR : VALUE_COLOR
+    if not na(value) and not na(asset.currency) and (row <= 2 or row == 4)
+        int start = row == 1 ? asset.ref1 : row == 2 ? asset.ref5 : asset.firstDay
+        float rounded = math.round(value, 2)
+        float lowest = rounded
+        float highest = rounded
+        for other in assets
+            int otherStart = row == 1 ? other.ref1 : row == 2 ? other.ref5 : other.firstDay
+            float otherValue = other.values.get(row)
+            if not na(otherValue) and asset.currency == other.currency and start == otherStart and asset.lastDay == other.lastDay
+                float otherRounded = math.round(otherValue, 2)
+                lowest := math.min(lowest, otherRounded)
+                highest := math.max(highest, otherRounded)
+        if lowest < highest
+            result := rounded == lowest ? LOW_COLOR : rounded == highest and highest > 0 ? BEST_COLOR : VALUE_COLOR
+    result
+
+comparisonDetail(ComparisonColumn asset, int row) =>
+    string dates = "Loaded history: " + formatPeriod(asset.firstDay, asset.lastDay) + "."
+    string detail = switch row
+        1 => "Reference " + formatDay(asset.ref1) + " · Shared target " + formatDay(oneYearTarget) + "."
+        2 => "Reference " + formatDay(asset.ref5) + " · Shared target " + formatDay(fiveYearTarget) + "."
+        3 => "Latest confirmed close relative to the highest observed close."
+        4 => "Lowest observed drawdown over the loaded history."
+        5 => "Latest confirmed close relative to the local episode peak."
+        6 => na(asset.dipCount) ? "Daily history unavailable." : str.tostring(asset.dipCount) + " completed dips ≥10% · " + str.tostring(asset.observedDays, "#,##0") + " observed calendar days."
+        => "Annualized price return using elapsed calendar days."
+    if row == 1 or row == 2
+        detail += " Latest confirmed: " + formatDay(asset.lastDay) + " · Shared end target: " + formatDay(comparisonAnchor) + "."
+    if row == 6 and not na(asset.dipCount)
+        if asset.invalidBars > 0
+            detail += "\n" + str.tostring(asset.invalidBars) + " invalid closes break episode coverage."
+        if na(asset.values.get(row))
+            detail += "\nAt least one calendar year of observed coverage is required."
+        detail += "\nObserved frequency."
+    detail + "\n" + dates
+
+renderComparison(table panel, array<ComparisonColumn> assets, int firstRow) =>
+    var array<string> labels = array.from("CAGR", "1Y", "5Y", "Current DD", "Max DD", "Active Dip", "Dips ≥10%")
+    if firstRow > 0
+        // Leave space for TradingView's chart controls in the top-right corner.
+        table.cell(panel, 0, 0, " ", text_size = size.small)
+    table.cell(panel, 0, firstRow, "", bgcolor = PANEL_BG)
+    for [row, label] in labels
+        table.cell(panel, 0, firstRow + row + 1, label, text_color = LABEL_COLOR, text_halign = text.align_left, text_size = size.small, bgcolor = PANEL_BG)
+    for [index, asset] in assets
+        int column = index + 1
+        array<string> parts = str.split(asset.tickerId, ":")
+        string name = parts.last()
+        string headerDetail = asset.tickerId + (na(asset.currency) ? "" : " · " + asset.currency)
+        headerDetail += "\nLatest confirmed: " + formatDay(asset.lastDay) + ".\nLoaded history: " + formatPeriod(asset.firstDay, asset.lastDay) + "."
+        headerDetail += "\nPrice adjustments depend on the symbol's feed."
+        table.cell(panel, column, firstRow, name, text_color = VALUE_COLOR, text_halign = text.align_right, text_size = size.small, bgcolor = SECTION_BG, tooltip = headerDetail)
+        for [row, value] in asset.values
+            string displayValue = row == 6 ? dipFrequencyText(asset.dipCount, value, asset.yearsPerDip) : formatPercent(value)
+            table.cell(panel, column, firstRow + row + 1, displayValue, text_color = comparisonColor(assets, asset, row), text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = comparisonDetail(asset, row))
+
 string panelPosition = switch panelCorner
     "Top left" => position.top_left
     "Bottom right" => position.bottom_right
@@ -230,46 +413,48 @@ string panelPosition = switch panelCorner
     => position.top_right
 
 bool dipsPanel = supportedChart and showDips
-int panelRows = not supportedChart ? 1 : dipsPanel ? (orderedThresholds ? 6 : 3) : 7
-var table panel = table.new(panelPosition, dipsPanel ? 2 : 4, panelRows, bgcolor = PANEL_BG, frame_color = SECTION_BG, frame_width = 1)
+int comparisonFirstRow = panelCorner == "Top right" ? 1 : 0
+int panelRows = not supportedChart ? 1 : comparisonPanel ? 8 + comparisonFirstRow : dipsPanel ? (orderedThresholds ? 6 : 3) : 7
+int panelColumns = comparisonPanel ? 2 + extraSymbols.size() : dipsPanel ? 2 : 4
+var table panel = table.new(panelPosition, panelColumns, panelRows, bgcolor = comparisonPanel ? na : PANEL_BG, frame_color = SECTION_BG, frame_width = comparisonPanel ? 0 : 1)
 if barstate.isfirst
     if dipsPanel
         table.merge_cells(panel, 0, 0, 1, 0)
         if not orderedThresholds
             table.merge_cells(panel, 0, 2, 1, 2)
-    else
+    else if not comparisonPanel
         table.merge_cells(panel, 0, 0, 3, 0)
         if supportedChart
             table.merge_cells(panel, 0, 5, 3, 5)
 
 if barstate.islast
-    // Both views stay on the previous confirmed bar throughout the open session.
-    int lastDay = barstate.isconfirmed ? time_tradingday : time_tradingday[1]
-    float lastClose = barstate.isconfirmed ? confirmedClose : confirmedClose[1]
-    if dipsPanel
+    int lastDay = chartPrices.lastDay
+    float lastClose = chartPrices.lastClose
+    int firstDay = chartPrices.firstDay
+    if comparisonPanel
+        renderComparison(panel, columns, comparisonFirstRow)
+    else if dipsPanel
         band(panel, 0, "Dips")
         string activeDetail = "Latest confirmed close relative to the current local peak."
         if na(lastClose)
             activeDetail += " Latest confirmed close unavailable."
-        metric(panel, 0, 1, "Active Dip", changePercent(lastClose, dipTop), activeDetail)
+        metric(panel, 0, 1, "Active Dip", changePercent(lastClose, chartDips.top), activeDetail)
         if orderedThresholds
             string coverage = formatPeriod(firstDay, lastDay)
-            coverage += " · " + str.tostring(observedDipDays, "#,##0") + " observed calendar days."
-            if invalidDipBars > 0
-                coverage += "\n" + str.tostring(invalidDipBars) + " invalid closes · " + str.tostring(interruptedDips) + " interrupted dips excluded."
+            coverage += " · " + str.tostring(chartDips.observedDays, "#,##0") + " observed calendar days."
+            if chartDips.invalidBars > 0
+                coverage += "\n" + str.tostring(chartDips.invalidBars) + " invalid closes · " + str.tostring(chartDips.interrupted) + " interrupted dips excluded."
             for [index, threshold] in thresholds
-                dipMetric(panel, index + 2, threshold, dipCounts.get(index), firstDay, coverage)
+                dipMetric(panel, index + 2, threshold, chartDips.counts.get(index), chartDips.observedDays, firstDay, coverage)
         else
             band(panel, 2, "Enter increasing dip thresholds")
     else if supportedChart
         float lastSma = barstate.isconfirmed ? smaForDay : smaForDay[1]
 
-        int days = int((lastDay - firstDay) / MS_PER_DAY)
-        float priceRatio = days > 0 and not na(lastClose) ? lastClose / firstClose : na
-        float priceReturn = 100 * (priceRatio - 1)
-        float cagr = not na(priceRatio) ? 100 * (math.pow(priceRatio, DAYS_PER_YEAR / days) - 1) : na
-        float currentDrawdown = changePercent(lastClose, peakClose)
-        float maxDrawdown = validDays >= 2 ? worstDrawdown : na
+        float priceReturn = 100 * (priceRatio(chartPrices) - 1)
+        float cagr = annualizedReturn(chartPrices)
+        float currentDrawdown = changePercent(lastClose, chartPrices.peakClose)
+        float maxDrawdown = maximumDrawdown(chartPrices)
         float smaDistance = changePercent(lastClose, lastSma)
         float shareAbove = comparableDays > 0 ? 100.0 * aboveSmaDays / comparableDays : na
 
@@ -279,10 +464,10 @@ if barstate.islast
         band(panel, 0, formatPeriod(firstDay, lastDay), dateDetail)
         metric(panel, 0, 1, "Return", priceReturn, "Price return since the first valid close. Adjustments follow the chart's price series.")
         metric(panel, 2, 1, "CAGR", cagr, "Annualized price return using elapsed calendar days.")
-        periodMetric(panel, 0, 2, 1, lastDay, lastClose, sessionCount)
-        periodMetric(panel, 2, 2, 3, lastDay, lastClose, sessionCount)
-        periodMetric(panel, 0, 3, 5, lastDay, lastClose, sessionCount)
-        periodMetric(panel, 2, 3, 10, lastDay, lastClose, sessionCount)
+        periodMetric(panel, 0, 2, 1, lastDay, lastClose, chartPrices)
+        periodMetric(panel, 2, 2, 3, lastDay, lastClose, chartPrices)
+        periodMetric(panel, 0, 3, 5, lastDay, lastClose, chartPrices)
+        periodMetric(panel, 2, 3, 10, lastDay, lastClose, chartPrices)
         metric(panel, 0, 4, "Current DD", currentDrawdown, "Latest confirmed close relative to the highest observed close.")
         metric(panel, 2, 4, "Max DD", maxDrawdown, "Lowest observed drawdown over the loaded history.")
         string unit = smaTimeframe == "Daily" ? "D" : smaTimeframe == "Weekly" ? "W" : "M"
