@@ -1,6 +1,6 @@
 # Status
 
-## P01 · 22 november 2026
+## P01
 
 [Macro Analysis i Pine Script v6](../indicators/macro-analysis.pine) visar prisavkastning, CAGR, mätperiod, aktuell och maximal drawdown, distans till SMA 200D samt andel och antal jämförbara dagar. SMA-linjen kan döljas i indikatorns inställningar. P01 stöder standardgrafer på exakt 1D. [Måttdefinitioner](METRICS.md#beslutat)
 
