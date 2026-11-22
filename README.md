@@ -1,8 +1,12 @@
 # Macro Analysis
 
-Med Macro Analysis ska det gå att jämföra långsiktig prisutveckling, nedgångar och beteende kring glidande medelvärden för index, ETF:er, fonder och andra symboler i TradingView.
+Macro Analysis visar långsiktig prisutveckling, drawdowns och beteende kring SMA 200D för den aktuella symbolen i TradingView.
 
-P00 etablerar dokumentation och arbetsregler. Nästa steg är en första indikator i Pine Script v6 för dagschart. [Nuläge och P01](docs/STATUS.md)
+Öppna en vanlig prisgraf på **1D**. Klistra in [Pine v6-källan](indicators/macro-analysis.pine) i **Pine Editor** och välj **Add to chart**. Med **Show SMA 200D** kan du dölja linjen och behålla statistiken.
+
+Panelen visar prisavkastning, CAGR och mätperiod, aktuell och maximal drawdown samt distans till SMA 200D och andel jämförbara dagar över SMA. Vecko- och intradagsintervall får ett meddelande om att 1D krävs.
+
+Mätperioden slutar vid den senaste bekräftade dagsbaren. Resultaten bygger på den historik som TradingView har laddat och chartens prisserie, inklusive eventuella val av valuta och justeringar. [Verifiering och nästa steg](docs/STATUS.md#p01)
 
 - Produktmål, användningsflöde och avgränsning. [Projektbeskrivning](docs/PROJECT_BRIEF.md)
 - Datakrav, mått och räkneexempel. [Måttdefinitioner](docs/METRICS.md)
