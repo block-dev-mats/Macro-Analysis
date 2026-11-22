@@ -70,6 +70,19 @@
 - **MA Distance** är `100 × (C_t / SMA_t − 1)` i procent för senaste bekräftade dagsstängningen. Visa `N/A` när fönstret behöver fler giltiga stängningar.
 - **Above MA** är `100 × antal dagar strikt över SMA / antal jämförbara dagar`. En jämförbar dag har en giltig bekräftad dagsstängning och en giltig SMA för den valda längden och det valda intervallet. Dagar med stängning exakt på SMA ingår i nämnaren. Tooltipen visar antalet jämförbara dagar och vid noll visas `N/A` för andelen. Kryssrutan på inställningsraden styr linjens synlighet.
 
+#### Fördelningar och perioder
+
+- **Panel View → MA Behavior** visar två kolumner för chartsymbolens dagsstängningar över och under samma SMA som linjen använder. **MA Statistics Period** är fem kalenderår som standard. Tio kalenderår och all laddad historik är valbara. Fönstret för varje bar slutar på dess sessionsdatum och börjar på kalenderårsdagen, inklusive gränsdatumet. Den 29 februari flyttas till den 28 februari vid behov. Ett valt kalenderfönster kräver giltiga MA-observationer tillbaka till eller före startdatumet. All Available använder all laddad giltig historik.
+- **Time %** kräver minst 20 jämförbara sessioner. Lika pris och SMA ingår i nämnaren och hör till ingen sida. **Median Distance** är medianen av de absoluta procentavstånden på respektive sida. **P90 Distance** är den sorterade observationen med rang `ceil(0,90 × antal)`. Båda kräver minst 30 avstånd per sida. Medianen använder medelvärdet av de två mittersta observationerna vid jämnt antal. Avstånden i tabellen visar sidans tecken.
+- **Median Duration** och **P90 Duration** använder samma definitioner på längderna hos minst tio fullständiga avslutade perioder per sida. En giltig korsning eller en exakt träff på SMA avslutar perioden. En ogiltig bar avbryter perioden och gör längden osäker. Perioden måste ha observerad start inom valt fönster och observerat avslut. Start mitt i en period vid första giltiga MA eller efter ett datagap ger en ofullständig period. Färdiga perioder som började före fönstret utesluts från fördelningen.
+- **Current Duration** räknar den pågående periodens observerade handelssessioner, även om starten ligger före fönstret. `≥` markerar att den faktiska starten är okänd. **Current Stretch** är andelen av minst 30 tidigare avstånd på samma sida som är högst lika stora som den aktuella avvikelsen, uttryckt i procent. Den bedöms före dagens observation läggs till. Historikmåtten i tabellen inkluderar den senaste bekräftade dagen. En session som saknas helt i datakällan kan se ut som ett handelsuppehåll.
+
+#### Extremfärger
+
+- **Color Extreme Candles** är av som standard. En bekräftad dagsbar över SMA kan färgas röd och en under SMA grön när avvikelsen är minst den valda historiska percentilen. Standard är P90 och intervallet är P50–P100. Färgen kan också utlösas när den aktuella periodlängden når historisk P90 Duration och avståndet minst når sidans median. Trösklarna räknas på respektive sida i aktuellt fönster före dagens stängning och före ett eventuellt periodavslut som bekräftas samma dag. De två villkoren kräver giltigt underlag var för sig.
+- Färgsättningen ritar endast markerade candles på originalbarens öppning, högsta, lägsta och stängning, så kropp och veke får samma extremfärg. Övriga bars behåller diagrammets färger och stil.
+- I tabellen markeras Current Stretch när avståndsvillkoret nås och Current Duration när längd- och medianvillkoren nås. Färgerna beskriver historisk ovanlighet. När diagrammet laddar mer äldre historik eller om datakällan ändras kan en tidigare fördelning få ett annat underlag.
+
 ### Deterministiska P01-exempel
 
 | Fall | Förväntat |

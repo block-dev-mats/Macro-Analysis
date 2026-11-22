@@ -16,7 +16,9 @@ Med **Panel View → Compare** jämför du chartsymbolen med upp till fyra extra
 
 **Dip Rarity** visar hur stor andel av de senaste fem årens dagsstängningar låg närmare sin historiska topp än vid jämförelsedatumet. [Beräkningsmetod](docs/METRICS.md#dip-rarity)
 
-Mätperioderna bygger på bekräftade dagsstängningar i den historik TradingView tillhandahåller. [Verifiering och begränsningar](docs/STATUS.md#p08)
+Med **Panel View → MA Behavior** ser du typiska och ovanliga avstånd och periodlängder på vardera sidan om SMA. **Color Extreme Candles** kan markera statistiskt ovanliga dagsstängningar. [Beräkningsmetod](docs/METRICS.md#ma-behavior)
+
+Mätperioderna bygger på bekräftade dagsstängningar i den historik TradingView tillhandahåller. [Verifiering och begränsningar](docs/STATUS.md#p09)
 
 - Produktmål, användningsflöde och avgränsning. [Projektbeskrivning](docs/PROJECT_BRIEF.md)
 - Datakrav, mått och räkneexempel. [Måttdefinitioner](docs/METRICS.md)

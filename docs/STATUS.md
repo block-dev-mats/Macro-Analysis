@@ -1,5 +1,18 @@
 # Status
 
+## P09
+
+**MA Behavior** visar tid, avstånd och periodlängder över och under vald SMA. **Color Extreme Candles** kan markera bekräftade bars med ovanligt stort avstånd eller en ovanligt lång period vid minst medianavståndet. [Metod och minimiurval](METRICS.md#ma-behavior)
+
+### Verifiering den 22 november 2026
+
+- TradingView Desktop kompilerade slutkällan från VS Code som revision **32** av den befintliga privata indikatorn. Avanza sparades med **SXR8 1D**, Compare i SEK, SMA 200D, femårsperiod och extremfärger av. Overview, Dips och femsymbolsvyn matchade tidigare mått. I Compare hade ACWI kvar stjärnan, Opportunity 1,0 och Dip Rarity 85,0 %.
+- På SXR8 med **SMA 200D och fem år** var mediana avstånd **+7,57 % / −3,04 %** och P90-avstånden **+13,17 % / −9,65 %**. P90 Duration var **46 / 15 handelssessioner** ovanför respektive under. Den pågående perioden ovanför var 162 sessioner och Current Stretch var 17,20 %. SMA 50D gav P90-avstånd **+6,43 % / −7,10 %** och P90 Duration **77 / 27**.
+- Desktop visade aktuellt avstånd **−5,28 %** för 50D, **+4,95 %** för 50W med och utan Smooth SMA på den aktuella fredagsstängningen, samt **+5,80 %** för 12M och **+6,29 %** med Smooth SMA. SMA 200D hade 2 539 jämförbara dagar för tio år och 3 865 i All Available.
+- Röda och gröna extremcandles sågs på SXR8 med 50D och P50. Röda historiska extremcandles sågs även vid 200D och P90. Ordinarie färger återgick när funktionen stängdes av. På en faktiskt öppen BTCUSDT.P-dagsbar den 22 november slutade MA-statistiken den **21 november**. Den öppna baren behöll sin ordinarie färg när föregående kvalificerade bar var grön.
+- Pine med produktionsfunktionerna matchade ett separat Python-facit för 2 700 syntetiska observationer i 5 Years, 10 Years och All Available. Testerna täckte inklusiva gränser, median, oavslutade och avbrutna perioder, uteslutning vid fönstrets start, lika stängningar, kort historik och den kronologiska extremklassificeringen. Värden ordnas med binär sökning och gamla värden tas bort när fönstret flyttas.
+- Pine Profiler på slutkällan mätte **455,6 ms** för femsymbolsvyn med färger av och **cirka 0,5 s** med femårsfärgning på. P08:s observerade baslinje var **421,9 ms**. Den externa statistikförfrågan hade fortsatt **29 495** exekveringar i båda P09-körningarna. En tidigare profilering av samma MA-beräkning i All Available på SXR8 mätte 95 ms totalt. Tiderna är enskilda körningar. [Pines resursgränser](https://www.tradingview.com/pine-script-docs/writing/limitations/)
+
 ## P08
 
 Compare visar en neutral rad för **Dip Rarity**, andelen dagsstängningar med grundare ATH-baserad drawdown än vid jämförelsedatumet. Urvalet omfattar fem kalenderår och följer Opportunity-datumet per valuta. [Metod och datakrav](METRICS.md#dip-rarity)

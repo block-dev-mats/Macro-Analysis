@@ -16,15 +16,24 @@ const color VALUE_COLOR = #F2F5F9
 const color MUTED_COLOR = #9EAFC2
 const color BEST_COLOR = #82D6A9
 const color LOW_COLOR = #F3A0A0
+const color EXTREME_ABOVE_COLOR = #D75567
+const color EXTREME_BELOW_COLOR = #30AE91
+const int MIN_MA_SESSIONS = 20
+const int MIN_MA_DISTANCES = 30
+const int MIN_MA_RUNS = 10
 
 int smaLength = input.int(200, "SMA", minval = 2, inline = "sma")
 string smaTimeframe = input.string("Daily", "", options = ["Daily", "Weekly", "Monthly"], inline = "sma")
 bool showSma = input.bool(true, "", inline = "sma", tooltip = "Length, timeframe, and whether to show the SMA line.")
 bool smoothSma = input.bool(false, "Smooth SMA", active = smaTimeframe != "Daily", tooltip = "Moves gradually to the next confirmed weekly or monthly SMA. The panel and line use the same value.")
 string panelCorner = input.string("Top right", "Panel corner", options = ["Top right", "Top left", "Bottom right", "Bottom left"])
-string panelView = input.string("Overview", "Panel View", options = ["Overview", "Dips", "Compare"])
+string panelView = input.string("Overview", "Panel View", options = ["Overview", "Dips", "Compare", "MA Behavior"])
 bool showDips = panelView == "Dips"
 bool showCompare = panelView == "Compare"
+bool showMaBehavior = panelView == "MA Behavior"
+bool colorExtremeCandles = input.bool(false, "Color Extreme Candles")
+int maExtremePercentile = input.int(90, "Extreme Percentile", minval = 50, maxval = 100, active = showMaBehavior or colorExtremeCandles, tooltip = "Threshold for distance. Duration always uses P90 and the median distance on that side.")
+string maStatisticsPeriod = input.string("5 Years", "MA Statistics Period", options = ["5 Years", "10 Years", "All Available"], active = showMaBehavior or colorExtremeCandles)
 bool compareInSEK = input.string("SEK", "Compare currency", options = ["SEK", "Native"], active = showCompare) == "SEK"
 float dipFirst = input.float(5, "Dip thresholds (%)", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
 float dipSecond = input.float(10, "", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
@@ -214,6 +223,144 @@ yearsEarlier(int sessionDay, int yearsBack) =>
     if targetMonth == 2 and targetDay == 29 and not leapYear
         targetDay := 28
     timestamp(SESSION_ZONE, targetYear, targetMonth, targetDay, 0, 0)
+
+type MaSample
+    int day
+    float value
+
+type MaDistribution
+    array<float> ordered
+    array<MaSample> byDate
+
+newMaDistribution() =>
+    MaDistribution.new(array.new<float>(), array.new<MaSample>())
+
+upperBound(array<float> ordered, float value) =>
+    int first = 0
+    int last = ordered.size()
+    while first < last
+        int mid = first + int((last - first) / 2)
+        if math.sign(ordered.get(mid) - value) <= 0
+            first := mid + 1
+        else
+            last := mid
+    first
+
+method includeSample(MaDistribution distribution, int day, float value, bool keepDates) =>
+    int position = upperBound(distribution.ordered, value)
+    if position == distribution.ordered.size()
+        distribution.ordered.push(value)
+    else
+        distribution.ordered.insert(position, value)
+    if keepDates
+        distribution.byDate.push(MaSample.new(day, value))
+
+method expireSamples(MaDistribution distribution, int cutoff) =>
+    while distribution.byDate.size() > 0 and distribution.byDate.first().day < cutoff
+        MaSample sample = distribution.byDate.shift()
+        distribution.ordered.remove(distribution.ordered.binary_search(sample.value))
+
+method maPercentile(MaDistribution distribution, int percentile, int minimum) =>
+    int size = distribution.ordered.size()
+    size >= minimum ? distribution.ordered.get(int(math.ceil(size * percentile / 100.0)) - 1) : na
+
+method maMedian(MaDistribution distribution, int minimum) =>
+    int size = distribution.ordered.size()
+    size >= minimum ? (distribution.ordered.get(int((size - 1) / 2)) + distribution.ordered.get(int(size / 2))) / 2 : na
+
+type MaHistory
+    MaDistribution aboveDistances
+    MaDistribution belowDistances
+    MaDistribution aboveRuns
+    MaDistribution belowRuns
+    array<int> equalDays
+    int equalCount = 0
+    int firstComparable = na
+    int lastDay = na
+    int cutoff = na
+    bool previousComparable = false
+    int side = 0
+    int runStart = na
+    int runLength = 0
+    bool runStartKnown = false
+    float distance = na
+    float stretch = na
+    bool extremeDistance = false
+    bool extremeDuration = false
+
+newMaHistory() =>
+    MaHistory.new(newMaDistribution(), newMaDistribution(), newMaDistribution(), newMaDistribution(), array.new<int>())
+
+method coversWindow(MaHistory history, int cutoff) =>
+    not na(history.firstComparable) and (na(cutoff) or history.firstComparable <= cutoff)
+
+method observeMa(MaHistory history, int day, float price, float mean, int years, int percentile, bool assess, bool showStretch) =>
+    int cutoff = years > 0 ? yearsEarlier(day, years) : na
+    bool keepDates = not na(cutoff)
+    if keepDates
+        history.aboveDistances.expireSamples(cutoff)
+        history.belowDistances.expireSamples(cutoff)
+        history.aboveRuns.expireSamples(cutoff)
+        history.belowRuns.expireSamples(cutoff)
+        while history.equalDays.size() > 0 and history.equalDays.first() < cutoff
+            history.equalDays.shift()
+            history.equalCount -= 1
+
+    bool comparable = not na(price) and not na(mean)
+    int side = comparable ? int(math.sign(price - mean)) : 0
+    float magnitude = comparable ? 100 * math.abs(price - mean) / mean : na
+    int length = side == 0 ? 0 : side == history.side ? history.runLength + 1 : 1
+    MaDistribution distances = side > 0 ? history.aboveDistances : history.belowDistances
+    MaDistribution runs = side > 0 ? history.aboveRuns : history.belowRuns
+
+    // Score this close before admitting either its distance or the run it may end.
+    history.stretch := na
+    history.extremeDistance := false
+    history.extremeDuration := false
+    if side != 0 and assess and history.coversWindow(cutoff)
+        float extreme = distances.maPercentile(percentile, MIN_MA_DISTANCES)
+        float median = distances.maMedian(MIN_MA_DISTANCES)
+        float p90Length = runs.maPercentile(90, MIN_MA_RUNS)
+        history.extremeDistance := not na(extreme) and math.sign(magnitude - extreme) >= 0
+        history.extremeDuration := not na(p90Length) and not na(median) and length >= p90Length and math.sign(magnitude - median) >= 0
+        if showStretch and not na(extreme)
+            history.stretch := 100.0 * upperBound(distances.ordered, magnitude) / distances.ordered.size()
+
+    if side != history.side
+        if comparable and history.runStartKnown and (not keepDates or history.runStart >= cutoff)
+            MaDistribution closedRuns = history.side > 0 ? history.aboveRuns : history.belowRuns
+            closedRuns.includeSample(history.runStart, history.runLength, keepDates)
+        history.runStart := side == 0 ? na : day
+        history.runStartKnown := side != 0 and history.previousComparable
+
+    if comparable
+        if na(history.firstComparable)
+            history.firstComparable := day
+        if side == 0
+            history.equalCount += 1
+            if keepDates
+                history.equalDays.push(day)
+        else
+            distances.includeSample(day, magnitude, keepDates)
+    history.lastDay := day
+    history.cutoff := cutoff
+    history.previousComparable := comparable
+    history.side := side
+    history.runLength := length
+    history.distance := side * magnitude
+
+bool maBehaviorPanel = supportedChart and showMaBehavior
+bool trackMaBehavior = maBehaviorPanel or (supportedChart and colorExtremeCandles)
+int maYears = maStatisticsPeriod == "5 Years" ? 5 : maStatisticsPeriod == "10 Years" ? 10 : 0
+var MaHistory maHistory = trackMaBehavior ? newMaHistory() : na
+color extremeCandle = na
+if trackMaBehavior and confirmedDay
+    bool showCurrent = maBehaviorPanel and (barstate.islast or barstate.islastconfirmedhistory)
+    maHistory.observeMa(time_tradingday, confirmedClose, smaForDay, maYears, maExtremePercentile, colorExtremeCandles or showCurrent, showCurrent)
+    if colorExtremeCandles and (maHistory.extremeDistance or maHistory.extremeDuration)
+        extremeCandle := maHistory.side > 0 ? EXTREME_ABOVE_COLOR : EXTREME_BELOW_COLOR
+// Draw only the flagged candles, at the chart's own OHLC coordinates.
+plotcandle(not na(extremeCandle) ? open : na, high, low, close, "Extreme MA Candles", color = extremeCandle, wickcolor = extremeCandle, bordercolor = extremeCandle, editable = false, display = display.pane)
 
 referenceIndex(PriceHistory history, int target) =>
     int oldest = math.max(0, history.sessionCount - PERIOD_HISTORY_SIZE)
@@ -689,6 +836,52 @@ renderComparison(table panel, array<ComparisonColumn> assets, int firstRow) =>
         string rarityValue = validRarity ? formatDipRarity(rarity.rarityCount, rarity.rarityDays) : "N/A"
         table.cell(panel, column, firstRow + ROW_RARITY + 1, rarityValue, text_color = validRarity ? VALUE_COLOR : MUTED_COLOR, text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = dipRarityDetail(rarity, rarityCutoff, asset.missingFx))
 
+formatMaDistance(float magnitude, bool above) =>
+    na(magnitude) ? "N/A" : (above ? "+" : "−") + formatPercent(magnitude)
+
+formatMaDuration(float length) =>
+    na(length) ? "N/A" : str.tostring(length, length == int(length) ? "#,##0" : "#,##0.0")
+
+maCell(table panel, int column, int row, string value, string detail, color extreme = na) =>
+    color valueColor = value == "N/A" or value == "—" ? MUTED_COLOR : na(extreme) ? VALUE_COLOR : extreme
+    table.cell(panel, column, row, value, text_color = valueColor, text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = detail)
+
+renderMaBehavior(table panel, MaHistory history, int firstRow) =>
+    var array<string> labels = array.from("Time %", "Median Distance", "P90 Distance", "Median Duration", "P90 Duration", "Current Duration", "Current Stretch")
+    if firstRow > 0
+        table.cell(panel, 0, 0, " ", text_size = size.small)
+    table.cell(panel, 0, firstRow, "", bgcolor = SECTION_BG)
+    for [index, label] in labels
+        table.cell(panel, 0, firstRow + index + 1, label, text_color = LABEL_COLOR, text_halign = text.align_left, text_size = size.small, bgcolor = PANEL_BG)
+
+    int total = history.aboveDistances.ordered.size() + history.belowDistances.ordered.size() + history.equalCount
+    bool covered = history.coversWindow(history.cutoff)
+    string window = "\n" + formatPeriod(math.max(nz(history.cutoff, history.firstComparable), history.firstComparable), history.lastDay) + "."
+    if not covered
+        window += " The selected calendar period needs more valid MA history."
+    string timeDetail = str.tostring(total, "#,##0") + " comparable sessions including closes equal to MA. At least " + str.tostring(MIN_MA_SESSIONS) + " required." + window
+    for column = 1 to 2
+        bool above = column == 1
+        table.cell(panel, column, firstRow, above ? "Above" : "Below", text_color = VALUE_COLOR, text_halign = text.align_right, text_size = size.small, bgcolor = SECTION_BG)
+        MaDistribution distances = above ? history.aboveDistances : history.belowDistances
+        MaDistribution runs = above ? history.aboveRuns : history.belowRuns
+        int dayCount = distances.ordered.size()
+        int runCount = runs.ordered.size()
+        bool current = history.side == (above ? 1 : -1)
+        color extreme = above ? LOW_COLOR : BEST_COLOR
+        string duration = current ? (history.runStartKnown ? "" : "≥") + formatMaDuration(history.runLength) : history.previousComparable ? "—" : "N/A"
+        string distanceDetail = str.tostring(dayCount, "#,##0") + " sessions on this side. At least " + str.tostring(MIN_MA_DISTANCES) + " required." + window
+        string runDetail = str.tostring(runCount, "#,##0") + " complete runs. At least " + str.tostring(MIN_MA_RUNS) + " required. Durations count trading sessions." + window
+        string currentDetail = "Consecutive trading sessions on this side. ≥ marks an unobserved start."
+        string stretchDetail = "Share of prior same-side distances no greater in magnitude than today's." + (current ? " Current distance: " + formatMaDistance(math.abs(history.distance), above) + "." : "") + "\nAt least " + str.tostring(MIN_MA_DISTANCES) + " prior sessions required." + window
+        maCell(panel, column, firstRow + 1, formatPercent(covered and total >= MIN_MA_SESSIONS ? 100.0 * dayCount / total : na), timeDetail)
+        maCell(panel, column, firstRow + 2, formatMaDistance(covered ? distances.maMedian(MIN_MA_DISTANCES) : na, above), distanceDetail)
+        maCell(panel, column, firstRow + 3, formatMaDistance(covered ? distances.maPercentile(90, MIN_MA_DISTANCES) : na, above), distanceDetail)
+        maCell(panel, column, firstRow + 4, formatMaDuration(covered ? runs.maMedian(MIN_MA_RUNS) : na), runDetail)
+        maCell(panel, column, firstRow + 5, formatMaDuration(covered ? runs.maPercentile(90, MIN_MA_RUNS) : na), runDetail)
+        maCell(panel, column, firstRow + 6, duration, currentDetail, current and history.extremeDuration ? extreme : na)
+        maCell(panel, column, firstRow + 7, current ? formatPercent(history.stretch) : history.previousComparable ? "—" : "N/A", stretchDetail, current and history.extremeDistance ? extreme : na)
+
 string panelPosition = switch panelCorner
     "Top left" => position.top_left
     "Bottom right" => position.bottom_right
@@ -696,16 +889,17 @@ string panelPosition = switch panelCorner
     => position.top_right
 
 bool dipsPanel = supportedChart and showDips
-int comparisonFirstRow = panelCorner == "Top right" ? 1 : 0
-int panelRows = not supportedChart ? 1 : comparisonPanel ? ROW_RARITY + 2 + comparisonFirstRow : dipsPanel ? (orderedThresholds ? 6 : 3) : 7
-int panelColumns = comparisonPanel ? 2 + extraSymbols.size() : dipsPanel ? 2 : 4
-var table panel = table.new(panelPosition, panelColumns, panelRows, bgcolor = comparisonPanel ? na : PANEL_BG, frame_color = SECTION_BG, frame_width = comparisonPanel ? 0 : 1)
+int panelFirstRow = panelCorner == "Top right" ? 1 : 0
+int panelRows = not supportedChart ? 1 : comparisonPanel ? ROW_RARITY + 2 + panelFirstRow : maBehaviorPanel ? 8 + panelFirstRow : dipsPanel ? (orderedThresholds ? 6 : 3) : 7
+int panelColumns = comparisonPanel ? 2 + extraSymbols.size() : maBehaviorPanel ? 3 : dipsPanel ? 2 : 4
+bool cellBackgrounds = comparisonPanel or maBehaviorPanel
+var table panel = table.new(panelPosition, panelColumns, panelRows, bgcolor = cellBackgrounds ? na : PANEL_BG, frame_color = SECTION_BG, frame_width = cellBackgrounds ? 0 : 1)
 if barstate.isfirst
     if dipsPanel
         table.merge_cells(panel, 0, 0, 1, 0)
         if not orderedThresholds
             table.merge_cells(panel, 0, 2, 1, 2)
-    else if not comparisonPanel
+    else if not comparisonPanel and not maBehaviorPanel
         table.merge_cells(panel, 0, 0, 3, 0)
         if supportedChart
             table.merge_cells(panel, 0, 5, 3, 5)
@@ -715,7 +909,9 @@ if barstate.islast
     float lastClose = chartPrices.lastClose
     int firstDay = chartPrices.firstDay
     if comparisonPanel
-        renderComparison(panel, columns, comparisonFirstRow)
+        renderComparison(panel, columns, panelFirstRow)
+    else if maBehaviorPanel
+        renderMaBehavior(panel, maHistory, panelFirstRow)
     else if dipsPanel
         band(panel, 0, "Dips")
         string activeDetail = "Latest confirmed close relative to the current local peak."
