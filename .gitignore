@@ -1,0 +1,11 @@
+# Lokal mätlogg
+/.project-local/
+
+# OS- och editorskräp
+.DS_Store
+*.swp
+
+# Lokal miljökonfiguration
+/.env
+/.env.*
+!/.env.example
