@@ -32,7 +32,7 @@ bool showDips = panelView == "Dips"
 bool showCompare = panelView == "Compare"
 bool showMaBehavior = panelView == "MA Behavior"
 bool colorExtremeCandles = input.bool(false, "Color Extreme Candles")
-int maExtremePercentile = input.int(90, "Extreme Percentile", minval = 50, maxval = 100, active = showMaBehavior or colorExtremeCandles, tooltip = "Threshold for distance. Duration always uses P90 and the median distance on that side.")
+int maExtremePercentile = input.int(95, "Extreme Percentile", minval = 55, maxval = 100, active = showMaBehavior or colorExtremeCandles, tooltip = "Upper percentile of signed daily distances. The lower threshold uses the complementary percentile. A new event requires leaving the zone.")
 string maStatisticsPeriod = input.string("5 Years", "MA Statistics Period", options = ["5 Years", "10 Years", "All Available"], active = showMaBehavior or colorExtremeCandles)
 bool compareInSEK = input.string("SEK", "Compare currency", options = ["SEK", "Native"], active = showCompare) == "SEK"
 float dipFirst = input.float(5, "Dip thresholds (%)", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
@@ -51,6 +51,7 @@ string symbolD = input.symbol("OMXSTO:XACTHDIV", "", inline = "compareD", active
 bool orderedThresholds = dipFirst < dipSecond and dipSecond < dipThird and dipThird < dipFourth
 bool isDaily = timeframe.isdaily and timeframe.multiplier == 1
 bool supportedChart = isDaily and chart.is_standard
+bool supportedMaChart = chart.is_standard and (timeframe.isseconds or timeframe.isminutes or timeframe.isdwm)
 bool confirmedDay = supportedChart and barstate.isconfirmed
 bool comparisonPanel = supportedChart and showCompare
 
@@ -194,26 +195,27 @@ completedSmas(int length) =>
     float mean = consecutiveSma(validPrice(close), length)
     [nz(mean[1]), nz(mean[2])]
 
-float smaForDay = consecutiveSma(confirmedClose, smaLength)
-if supportedChart and smaTimeframe != "Daily"
-    string requestedTimeframe = smaTimeframe == "Weekly" ? "1W" : "1M"
-    // Publish the prior period's SMA from the start of the next period. Send 0
-    // for unavailable windows so an explicit gap survives the chart merge.
-    [completedSma, earlierSma] = request.security(syminfo.tickerid, requestedTimeframe, completedSmas(smaLength), lookahead = barmerge.lookahead_on)
-    smaForDay := confirmedDay ? validPrice(completedSma) : na
-    if smoothSma and not na(smaForDay) and math.sign(earlierSma) == 1
-        int periodStart = time(requestedTimeframe)
-        int periodEnd = time_close(requestedTimeframe)
-        if periodEnd > periodStart
-            float progress = math.max(0.0, math.min(1.0, float(time_close - periodStart) / (periodEnd - periodStart)))
-            smaForDay := earlierSma + progress * (smaForDay - earlierSma)
+maForDailyClose(float dailyClose) =>
+    float mean = consecutiveSma(dailyClose, smaLength)
+    if smaTimeframe != "Daily"
+        string requestedTimeframe = smaTimeframe == "Weekly" ? "1W" : "1M"
+        // Compute in the daily context even when the chart itself is weekly or monthly.
+        [completedSma, earlierSma] = request.security(syminfo.tickerid, requestedTimeframe, completedSmas(smaLength), lookahead = barmerge.lookahead_on)
+        mean := validPrice(completedSma)
+        if smoothSma and not na(mean) and math.sign(earlierSma) == 1
+            int periodStart = time(requestedTimeframe)
+            int periodEnd = time_close(requestedTimeframe)
+            if periodEnd > periodStart
+                float progress = math.max(0.0, math.min(1.0, float(time_close - periodStart) / (periodEnd - periodStart)))
+                mean := earlierSma + progress * (mean - earlierSma)
+    mean
+
+float smaForDay = supportedChart ? maForDailyClose(confirmedClose) : na
 
 if not na(confirmedClose) and not na(smaForDay)
     comparableDays += 1
     if math.sign(confirmedClose - smaForDay) == 1
         aboveSmaDays += 1
-
-plot(showSma ? smaForDay : na, "SMA", color = #609DB9, style = plot.style_linebr, display = display.pane + display.data_window)
 
 yearsEarlier(int sessionDay, int yearsBack) =>
     int targetYear = year(sessionDay, SESSION_ZONE) - yearsBack
@@ -285,14 +287,46 @@ type MaHistory
     bool runStartKnown = false
     float distance = na
     float stretch = na
-    bool extremeDistance = false
-    bool extremeDuration = false
+    int extremeZone = 0
 
 newMaHistory() =>
     MaHistory.new(newMaDistribution(), newMaDistribution(), newMaDistribution(), newMaDistribution(), array.new<int>())
 
 method coversWindow(MaHistory history, int cutoff) =>
     not na(history.firstComparable) and (na(cutoff) or history.firstComparable <= cutoff)
+
+method signedDistanceAt(MaHistory history, int index) =>
+    int below = history.belowDistances.ordered.size()
+    int nonpositive = below + history.equalCount
+    index < below ? -history.belowDistances.ordered.get(below - index - 1) : index < nonpositive ? 0.0 : history.aboveDistances.ordered.get(index - nonpositive)
+
+method signedPercentile(MaHistory history, int percentile) =>
+    int count = history.aboveDistances.ordered.size() + history.belowDistances.ordered.size() + history.equalCount
+    float position = (count - 1) * percentile / 100.0
+    int left = int(math.floor(position))
+    float lower = history.signedDistanceAt(left)
+    float upper = history.signedDistanceAt(int(math.ceil(position)))
+    lower + (upper - lower) * (position - left)
+
+method recordExtremeEntry(MaHistory history, int side, float distance, int cutoff, int percentile) =>
+    int event = 0
+    int zone = history.extremeZone
+    bool covered = history.coversWindow(cutoff)
+    bool aboveReady = covered and history.aboveDistances.ordered.size() >= MIN_MA_DISTANCES
+    bool belowReady = covered and history.belowDistances.ordered.size() >= MIN_MA_DISTANCES
+    int lowerTail = 100 - percentile
+    if zone == 1 and (side <= 0 or (aboveReady and distance < history.signedPercentile(percentile - 5)))
+        zone := 0
+    else if zone == -1 and (side >= 0 or (belowReady and distance > history.signedPercentile(lowerTail + 5)))
+        zone := 0
+    if zone == 0
+        if side > 0 and aboveReady and distance >= history.signedPercentile(percentile)
+            event := 1
+        else if side < 0 and belowReady and distance <= history.signedPercentile(lowerTail)
+            event := -1
+        zone := event
+    history.extremeZone := zone
+    event
 
 method observeMa(MaHistory history, int day, float price, float mean, int years, int percentile, bool assess, bool showStretch) =>
     int cutoff = years > 0 ? yearsEarlier(day, years) : na
@@ -311,20 +345,9 @@ method observeMa(MaHistory history, int day, float price, float mean, int years,
     float magnitude = comparable ? 100 * math.abs(price - mean) / mean : na
     int length = side == 0 ? 0 : side == history.side ? history.runLength + 1 : 1
     MaDistribution distances = side > 0 ? history.aboveDistances : history.belowDistances
-    MaDistribution runs = side > 0 ? history.aboveRuns : history.belowRuns
-
-    // Score this close before admitting either its distance or the run it may end.
-    history.stretch := na
-    history.extremeDistance := false
-    history.extremeDuration := false
-    if side != 0 and assess and history.coversWindow(cutoff)
-        float extreme = distances.maPercentile(percentile, MIN_MA_DISTANCES)
-        float median = distances.maMedian(MIN_MA_DISTANCES)
-        float p90Length = runs.maPercentile(90, MIN_MA_RUNS)
-        history.extremeDistance := not na(extreme) and math.sign(magnitude - extreme) >= 0
-        history.extremeDuration := not na(p90Length) and not na(median) and length >= p90Length and math.sign(magnitude - median) >= 0
-        if showStretch and not na(extreme)
-            history.stretch := 100.0 * upperBound(distances.ordered, magnitude) / distances.ordered.size()
+    // Score against prior distances. A missing observation cannot rearm a zone.
+    int event = assess and comparable ? history.recordExtremeEntry(side, side * magnitude, cutoff, percentile) : 0
+    history.stretch := showStretch and side != 0 and history.coversWindow(cutoff) and distances.ordered.size() >= MIN_MA_DISTANCES ? 100.0 * upperBound(distances.ordered, magnitude) / distances.ordered.size() : na
 
     if side != history.side
         if comparable and history.runStartKnown and (not keepDates or history.runStart >= cutoff)
@@ -348,17 +371,95 @@ method observeMa(MaHistory history, int day, float price, float mean, int years,
     history.side := side
     history.runLength := length
     history.distance := side * magnitude
+    event
 
-bool maBehaviorPanel = supportedChart and showMaBehavior
-bool trackMaBehavior = maBehaviorPanel or (supportedChart and colorExtremeCandles)
+bool maBehaviorPanel = supportedMaChart and showMaBehavior
+bool trackMaBehavior = supportedMaChart and (showMaBehavior or colorExtremeCandles)
 int maYears = maStatisticsPeriod == "5 Years" ? 5 : maStatisticsPeriod == "10 Years" ? 10 : 0
-var MaHistory maHistory = trackMaBehavior ? newMaHistory() : na
-color extremeCandle = na
-if trackMaBehavior and confirmedDay
-    bool showCurrent = maBehaviorPanel and (barstate.islast or barstate.islastconfirmedhistory)
-    maHistory.observeMa(time_tradingday, confirmedClose, smaForDay, maYears, maExtremePercentile, colorExtremeCandles or showCurrent, showCurrent)
-    if colorExtremeCandles and (maHistory.extremeDistance or maHistory.extremeDuration)
-        extremeCandle := maHistory.side > 0 ? EXTREME_ABOVE_COLOR : EXTREME_BELOW_COLOR
+
+type MaSideSummary
+    int sessions
+    int runs
+    float medianDistance
+    float p90Distance
+    float medianDuration
+    float p90Duration
+
+summarizeMaSide(MaDistribution distances, MaDistribution runs, bool covered) =>
+    MaSideSummary.new(distances.ordered.size(), runs.ordered.size(), covered ? distances.maMedian(MIN_MA_DISTANCES) : na,
+         covered ? distances.maPercentile(90, MIN_MA_DISTANCES) : na, covered ? runs.maMedian(MIN_MA_RUNS) : na, covered ? runs.maPercentile(90, MIN_MA_RUNS) : na)
+
+type MaSummary
+    MaSideSummary above
+    MaSideSummary below
+    int equalCount
+    bool covered
+    int startDay
+    int endDay
+    bool comparable
+    int side
+    int runLength
+    bool runStartKnown
+    float distance
+    float stretch
+    int event
+
+method summarizeMa(MaHistory history, int event) =>
+    bool covered = history.coversWindow(history.cutoff)
+    int start = math.max(nz(history.cutoff, history.firstComparable), history.firstComparable)
+    MaSummary.new(summarizeMaSide(history.aboveDistances, history.aboveRuns, covered), summarizeMaSide(history.belowDistances, history.belowRuns, covered),
+         history.equalCount, covered, start, history.lastDay, history.previousComparable, history.side, history.runLength, history.runStartKnown, history.distance, history.stretch, event)
+
+type DailyMaFrame
+    int closesAt
+    float finalPrice
+    float mean
+    bool sourceHistorical
+    int eventAt
+    int eventSide
+    MaSummary summary
+
+dailyMaFrame(float price, float mean, bool takeClose) =>
+    var MaHistory history = trackMaBehavior ? newMaHistory() : na
+    var DailyMaFrame frame = na
+    var int eventAt = na
+    var int eventSide = 0
+    if takeClose
+        int event = trackMaBehavior ? history.observeMa(time_tradingday, price, mean, maYears, maExtremePercentile, true, showMaBehavior) : 0
+        if event != 0
+            eventAt := time_close
+            eventSide := event
+        frame := DailyMaFrame.new(time_close, price, mean, barstate.ishistory, eventAt, eventSide, showMaBehavior ? history.summarizeMa(event) : na)
+    frame
+
+requestedDailyMa() =>
+    float price = validPrice(close)
+    DailyMaFrame frame = dailyMaFrame(price, maForDailyClose(price), true)
+    // Only scalar results leave the daily context. The previous frame is final
+    // even when the current source bar is still developing.
+    [frame, frame[1]]
+
+confirmedMaFrame(DailyMaFrame source, DailyMaFrame previous) =>
+    int availableUntil = barstate.ishistory ? time_close : math.min(time_close, timenow)
+    bool sourceElapsed = not na(source) and source.closesAt <= availableUntil
+    // A simultaneous host close corroborates the daily close on the same feed.
+    bool sameClose = sourceElapsed and barstate.isconfirmed and source.closesAt == time_close and math.sign(source.finalPrice - close) == 0
+    sourceElapsed and (barstate.ishistory or source.sourceHistorical or sameClose) ? source : not na(previous) and previous.closesAt <= availableUntil ? previous : na
+
+DailyMaFrame activeMa = na
+if supportedChart
+    activeMa := dailyMaFrame(confirmedClose, smaForDay, confirmedDay)
+else if supportedMaChart and (showSma or trackMaBehavior)
+    [source, previous] = request.security(syminfo.tickerid, "1D", requestedDailyMa(), lookahead = barmerge.lookahead_off)
+    activeMa := confirmedMaFrame(source, previous)
+
+float chartMa = na(activeMa) ? na : activeMa.mean
+int confirmedThrough = na(activeMa) ? na : activeMa.closesAt
+int eventAt = na(activeMa) ? na : activeMa.eventAt
+bool eventInsideBar = not na(eventAt) and eventAt > time and eventAt <= time_close
+bool eventPublishedLate = timeframe.isintraday and not na(confirmedThrough[1]) and not na(eventAt) and eventAt > confirmedThrough[1] and eventAt <= time
+color extremeCandle = colorExtremeCandles and (eventInsideBar or eventPublishedLate) ? (activeMa.eventSide > 0 ? EXTREME_ABOVE_COLOR : EXTREME_BELOW_COLOR) : na
+plot(showSma ? chartMa : na, "SMA", color = #609DB9, style = plot.style_linebr, display = display.pane + display.data_window)
 // Draw only the flagged candles, at the chart's own OHLC coordinates.
 plotcandle(not na(extremeCandle) ? open : na, high, low, close, "Extreme MA Candles", color = extremeCandle, wickcolor = extremeCandle, bordercolor = extremeCandle, editable = false, display = display.pane)
 
@@ -846,7 +947,7 @@ maCell(table panel, int column, int row, string value, string detail, color extr
     color valueColor = value == "N/A" or value == "—" ? MUTED_COLOR : na(extreme) ? VALUE_COLOR : extreme
     table.cell(panel, column, row, value, text_color = valueColor, text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = detail)
 
-renderMaBehavior(table panel, MaHistory history, int firstRow) =>
+renderMaBehavior(table panel, MaSummary history, int firstRow) =>
     var array<string> labels = array.from("Time %", "Median Distance", "P90 Distance", "Median Duration", "P90 Duration", "Current Duration", "Current Stretch")
     if firstRow > 0
         table.cell(panel, 0, 0, " ", text_size = size.small)
@@ -854,33 +955,29 @@ renderMaBehavior(table panel, MaHistory history, int firstRow) =>
     for [index, label] in labels
         table.cell(panel, 0, firstRow + index + 1, label, text_color = LABEL_COLOR, text_halign = text.align_left, text_size = size.small, bgcolor = PANEL_BG)
 
-    int total = history.aboveDistances.ordered.size() + history.belowDistances.ordered.size() + history.equalCount
-    bool covered = history.coversWindow(history.cutoff)
-    string window = "\n" + formatPeriod(math.max(nz(history.cutoff, history.firstComparable), history.firstComparable), history.lastDay) + "."
-    if not covered
+    int total = history.above.sessions + history.below.sessions + history.equalCount
+    string window = "\n" + formatPeriod(history.startDay, history.endDay) + "."
+    if not history.covered
         window += " The selected calendar period needs more valid MA history."
     string timeDetail = str.tostring(total, "#,##0") + " comparable sessions including closes equal to MA. At least " + str.tostring(MIN_MA_SESSIONS) + " required." + window
     for column = 1 to 2
         bool above = column == 1
         table.cell(panel, column, firstRow, above ? "Above" : "Below", text_color = VALUE_COLOR, text_halign = text.align_right, text_size = size.small, bgcolor = SECTION_BG)
-        MaDistribution distances = above ? history.aboveDistances : history.belowDistances
-        MaDistribution runs = above ? history.aboveRuns : history.belowRuns
-        int dayCount = distances.ordered.size()
-        int runCount = runs.ordered.size()
+        MaSideSummary stats = above ? history.above : history.below
         bool current = history.side == (above ? 1 : -1)
         color extreme = above ? LOW_COLOR : BEST_COLOR
-        string duration = current ? (history.runStartKnown ? "" : "≥") + formatMaDuration(history.runLength) : history.previousComparable ? "—" : "N/A"
-        string distanceDetail = str.tostring(dayCount, "#,##0") + " sessions on this side. At least " + str.tostring(MIN_MA_DISTANCES) + " required." + window
-        string runDetail = str.tostring(runCount, "#,##0") + " complete runs. At least " + str.tostring(MIN_MA_RUNS) + " required. Durations count trading sessions." + window
+        string duration = current ? (history.runStartKnown ? "" : "≥") + formatMaDuration(history.runLength) : history.comparable ? "—" : "N/A"
+        string distanceDetail = str.tostring(stats.sessions, "#,##0") + " sessions on this side. At least " + str.tostring(MIN_MA_DISTANCES) + " required." + window
+        string runDetail = str.tostring(stats.runs, "#,##0") + " complete runs. At least " + str.tostring(MIN_MA_RUNS) + " required. Durations count trading sessions." + window
         string currentDetail = "Consecutive trading sessions on this side. ≥ marks an unobserved start."
         string stretchDetail = "Share of prior same-side distances no greater in magnitude than today's." + (current ? " Current distance: " + formatMaDistance(math.abs(history.distance), above) + "." : "") + "\nAt least " + str.tostring(MIN_MA_DISTANCES) + " prior sessions required." + window
-        maCell(panel, column, firstRow + 1, formatPercent(covered and total >= MIN_MA_SESSIONS ? 100.0 * dayCount / total : na), timeDetail)
-        maCell(panel, column, firstRow + 2, formatMaDistance(covered ? distances.maMedian(MIN_MA_DISTANCES) : na, above), distanceDetail)
-        maCell(panel, column, firstRow + 3, formatMaDistance(covered ? distances.maPercentile(90, MIN_MA_DISTANCES) : na, above), distanceDetail)
-        maCell(panel, column, firstRow + 4, formatMaDuration(covered ? runs.maMedian(MIN_MA_RUNS) : na), runDetail)
-        maCell(panel, column, firstRow + 5, formatMaDuration(covered ? runs.maPercentile(90, MIN_MA_RUNS) : na), runDetail)
-        maCell(panel, column, firstRow + 6, duration, currentDetail, current and history.extremeDuration ? extreme : na)
-        maCell(panel, column, firstRow + 7, current ? formatPercent(history.stretch) : history.previousComparable ? "—" : "N/A", stretchDetail, current and history.extremeDistance ? extreme : na)
+        maCell(panel, column, firstRow + 1, formatPercent(history.covered and total >= MIN_MA_SESSIONS ? 100.0 * stats.sessions / total : na), timeDetail)
+        maCell(panel, column, firstRow + 2, formatMaDistance(stats.medianDistance, above), distanceDetail)
+        maCell(panel, column, firstRow + 3, formatMaDistance(stats.p90Distance, above), distanceDetail)
+        maCell(panel, column, firstRow + 4, formatMaDuration(stats.medianDuration), runDetail)
+        maCell(panel, column, firstRow + 5, formatMaDuration(stats.p90Duration), runDetail)
+        maCell(panel, column, firstRow + 6, duration, currentDetail)
+        maCell(panel, column, firstRow + 7, current ? formatPercent(history.stretch) : history.comparable ? "—" : "N/A", stretchDetail, current and history.event != 0 ? extreme : na)
 
 string panelPosition = switch panelCorner
     "Top left" => position.top_left
@@ -890,7 +987,7 @@ string panelPosition = switch panelCorner
 
 bool dipsPanel = supportedChart and showDips
 int panelFirstRow = panelCorner == "Top right" ? 1 : 0
-int panelRows = not supportedChart ? 1 : comparisonPanel ? ROW_RARITY + 2 + panelFirstRow : maBehaviorPanel ? 8 + panelFirstRow : dipsPanel ? (orderedThresholds ? 6 : 3) : 7
+int panelRows = maBehaviorPanel ? 8 + panelFirstRow : not supportedChart ? 1 : comparisonPanel ? ROW_RARITY + 2 + panelFirstRow : dipsPanel ? (orderedThresholds ? 6 : 3) : 7
 int panelColumns = comparisonPanel ? 2 + extraSymbols.size() : maBehaviorPanel ? 3 : dipsPanel ? 2 : 4
 bool cellBackgrounds = comparisonPanel or maBehaviorPanel
 var table panel = table.new(panelPosition, panelColumns, panelRows, bgcolor = cellBackgrounds ? na : PANEL_BG, frame_color = SECTION_BG, frame_width = cellBackgrounds ? 0 : 1)
@@ -911,7 +1008,10 @@ if barstate.islast
     if comparisonPanel
         renderComparison(panel, columns, panelFirstRow)
     else if maBehaviorPanel
-        renderMaBehavior(panel, maHistory, panelFirstRow)
+        if not na(activeMa)
+            renderMaBehavior(panel, activeMa.summary, panelFirstRow)
+        else
+            table.cell(panel, 0, panelFirstRow, "Daily history unavailable", bgcolor = PANEL_BG, text_color = MUTED_COLOR, text_size = size.small)
     else if dipsPanel
         band(panel, 0, "Dips")
         string activeDetail = "Latest confirmed close relative to the current local peak."
@@ -957,5 +1057,5 @@ if barstate.islast
         metric(panel, 0, 6, "MA Distance", smaDistance, "Latest confirmed daily close relative to its available SMA.")
         metric(panel, 2, 6, "Above MA", shareAbove, str.tostring(comparableDays, "#,##0") + " comparable days. Closes equal to SMA are included in the denominator.")
     else
-        string instruction = isDaily ? "Use a standard price chart" : "Use a 1D chart"
+        string instruction = supportedMaChart ? "Use a 1D chart or select MA Behavior" : "Use a standard time-based chart"
         band(panel, 0, "Macro Analysis · " + instruction)

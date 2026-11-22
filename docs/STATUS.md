@@ -1,5 +1,29 @@
 # Status
 
+## P10
+
+SMA, **MA Behavior** och extremfärger följer med vid byte av tidsintervall. Måtten använder symbolens dagssekvens. Extremfärger markerar inträdet i en svans av signerade avstånd, med P95/P5 som standard och ett separat återställningsband. Overview, Dips och Compare kör vidare på 1D. [Tidsintervall och extremmodell](METRICS.md#ma-behavior)
+
+### Verifiering den 22–23 november 2026
+
+- TradingView Desktop kompilerade från VS Code och sparade **revision 33** i den befintliga privata indikatorn. Avanza sparades på SXR8 1D med Compare i SEK, 200D och användarens tidigare aktiverade färgning med den nya standardgränsen 95. ACWI behöll stjärnan, Opportunity 1,0 och Dip Rarity 85,0 %.
+- En Pine-kontroll mot en separat daglig `ta.sma` gav **7 564,288604** på 4H, 1D, 1W och 1M, med **1 275** jämförbara dagsobservationer till och med **2026-11-20** i varje femårsfönster. 4H visade 21 unika markeringar i den laddade historiken, varav en på första efterföljande värdbar. Ingen markering kom före dagsstängningen eller upprepades. 1W hade 21 markerade värdbars och 1M 17. SXR8 50W gav +4,95 % på 1W med och utan utjämning vid veckans slut. 12M gav +5,80 % utan och +6,29 % med utjämning. 1D och motsvarande högre graf stämde för de jämförda värdena.
+- På en faktiskt öppen BYBIT:BTCUSDT.P-vecka visade 1W, 4H och 1D samma senaste bekräftade datum **2026-11-21**, **1 827** jämförbara sessioner och ett avstånd på **−16,93 %**. Den öppna dagsobservationen den 22 november ingick inte. Historiska färgade veckocandles och den pågående veckans SMA visades. SXR8 på 1M visade 1D-instruktionen för Compare med SMA-linjen kvar. Syntetiska Pine-tester täckte inklusiva svansgränser, återställningsband, saknad observation, kort historik och otillräckligt urval på ena sidan.
+- Pine Profiler med MA Behavior och färgning på gav **121,3 ms totalt på 1W** och **70,5 ms på 1M**. På dessa två grafer körs dagsmotorn i en förfrågan till symbolens dagskontext. Diagrammens egen historik, datakällans täckning och Pine-gränserna kan begränsa äldre markeringar. [Resursgränser](https://www.tradingview.com/pine-script-docs/writing/limitations/#intrabars)
+
+### Extremhändelser mot P09
+
+Fönstret 2021-11-20–2026-11-20 omfattade 1 275 sessioner för SXR8 i SEK och 1 827 för BINANCE:BTCUSDT. Båda modellerna använde samma femårshistorik per dag och sina respektive standardtrösklar. En P09-händelse var den första dagen i en sammanhängande följd med samma extremfärg. P10 räknar inträden efter återställning.
+
+| Symbol och SMA | P09 händelser röd/grön | P10 händelser röd/grön | Längsta röda period P09 → P10 | Längsta gröna period P09 → P10 |
+| --- | ---: | ---: | ---: | ---: |
+| SXR8 50D | 31 / 10 | 12 / 8 | 23 → 1 | 46 → 1 |
+| SXR8 200D | 18 / 2 | 11 / 4 | 103 → 1 | 71 → 1 |
+| BTCUSDT 50D | 17 / 11 | 3 / 4 | 16 → 1 | 9 → 1 |
+| BTCUSDT 200D | 4 / 9 | 0 / 1 | 3 → 0 | 72 → 1 |
+
+Med SXR8 200D minskade antalet röda dagsbars från 471 till 11. P10:s nya färgfördelning är verifierad på dessa serier. Färgen på en pågående veckocandle kan bytas när en senare bekräftad dagsstängning samma vecka ger en ny extremhändelse. En fördröjd dagsfeed kan flytta markeringen till första efterföljande intradagsbar. Reviderad eller utökad prishistorik kan ändra tidigare statistiskt underlag.
+
 ## P09
 
 **MA Behavior** visar tid, avstånd och periodlängder över och under vald SMA. **Color Extreme Candles** kan markera bekräftade bars med ovanligt stort avstånd eller en ovanligt lång period vid minst medianavståndet. [Metod och minimiurval](METRICS.md#ma-behavior)

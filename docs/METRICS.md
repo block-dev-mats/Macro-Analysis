@@ -4,7 +4,7 @@
 
 ### Data och mätperiod
 
-- Indikatorn använder prisstängningarna på standardgrafer med exakt intervallet `1D`. Andra intervall och syntetiska charttyper som Heikin Ashi visar en instruktion i panelen.
+- Overview, Dips och Compare använder prisstängningar på standardgrafer med exakt intervallet `1D`. SMA-linjen, MA Behavior och extremfärger stöder standardgrafer med tidsbaserade intervall. Syntetiska charttyper som Heikin Ashi visar en instruktion i panelen.
 - En giltig observation är en tillgänglig dagsstängning större än noll. `na`, noll och negativa stängningar behandlas som saknade. En explicit ogiltig bar bryter SMA-fönstret. En utebliven bar i datakällan kan vara ett planerat uppehåll eller ett datagap. Beräkningarna använder de barer som TradingView laddat.
 - Panelen visar det första laddade giltiga sessionsdatumet och det senaste bekräftade sessionsdatumet. Pine anger datumen genom `time_tradingday`. CAGR använder hela kalenderdagar mellan dem, även vid sommartidsbyten.
 - Statistik, historiska räknare och SMA-linjen uppdateras när dagsbaren bekräftas. Om den senaste bekräftade barens stängning är ogiltig visar panelen slutdatum och `N/A` för de mått som behöver stängningen. Historiskt max-DD använder tidigare giltiga stängningar och andelen dagar över SMA använder tidigare jämförbara dagar.
@@ -70,6 +70,12 @@
 - **MA Distance** är `100 × (C_t / SMA_t − 1)` i procent för senaste bekräftade dagsstängningen. Visa `N/A` när fönstret behöver fler giltiga stängningar.
 - **Above MA** är `100 × antal dagar strikt över SMA / antal jämförbara dagar`. En jämförbar dag har en giltig bekräftad dagsstängning och en giltig SMA för den valda längden och det valda intervallet. Dagar med stängning exakt på SMA ingår i nämnaren. Tooltipen visar antalet jämförbara dagar och vid noll visas `N/A` för andelen. Kryssrutan på inställningsraden styr linjens synlighet.
 
+#### Tidsintervall och bekräftelse
+
+- MA-motorn kör i symbolens `1D`-kontext. `200 Daily` räknar alltid 200 dagsstängningar. Även jämförelsen med Weekly- eller Monthly-SMA och dess eventuella utjämning görs per dagsobservation. Avstånd, percentiler och varaktighet beräknas för hela tillgängliga dagssekvensen i den kontexten. `request.security()` överför senaste och föregående dagsresultat, inklusive tidpunkten för senaste extremhändelsen. Stora dagliga samlingar behöver därmed inte hämtas till värddiagrammet med `request.security_lower_tf()`. [TradingViews datamodell](https://www.tradingview.com/pine-script-docs/concepts/other-timeframes-and-data/)
+- På 1D tas stängningen vid bekräftelsen. På andra tidsintervall visas senaste tillgängliga avslutade dagsresultat inom diagrammets tidpunkt. Historiskt styr värdbarens stängning avgränsningen. I realtid används ett avslutat dagsresultat eller föregående dagsresultat när dagens är preliminärt. En samtidigt bekräftad värdbar med samma stängningstid och slutkurs kan styrka dagens slutkurs. Vid fördröjd feed kan ett dagsresultat därför bli synligt först på nästa tillgängliga värdbar.
+- På 1W och 1M kan pågående bars uppdateras efter varje bekräftad dagsstängning. Vid flera extremhändelser i samma värdbar visas den senaste bekräftade händelsens färg. Under 1D visas en händelse på den värdbar där dagsstängningen blir tillgänglig. När feeden lämnar bekräftelsen senare kan första efterföljande värdbar få markeringen. Bekräftelsetiden gör att upprepade värden på efterföljande intradagsbarer inte målas igen. Diagrammets laddade historik, abonnemangets datagränser och källans täckning styr hur långt tillbaka resultat kan visas. [Pines gränser för intrabardata](https://www.tradingview.com/pine-script-docs/writing/limitations/#intrabars)
+
 #### Fördelningar och perioder
 
 - **Panel View → MA Behavior** visar två kolumner för chartsymbolens dagsstängningar över och under samma SMA som linjen använder. **MA Statistics Period** är fem kalenderår som standard. Tio kalenderår och all laddad historik är valbara. Fönstret för varje bar slutar på dess sessionsdatum och börjar på kalenderårsdagen, inklusive gränsdatumet. Den 29 februari flyttas till den 28 februari vid behov. Ett valt kalenderfönster kräver giltiga MA-observationer tillbaka till eller före startdatumet. All Available använder all laddad giltig historik.
@@ -79,9 +85,10 @@
 
 #### Extremfärger
 
-- **Color Extreme Candles** är av som standard. En bekräftad dagsbar över SMA kan färgas röd och en under SMA grön när avvikelsen är minst den valda historiska percentilen. Standard är P90 och intervallet är P50–P100. Färgen kan också utlösas när den aktuella periodlängden når historisk P90 Duration och avståndet minst når sidans median. Trösklarna räknas på respektive sida i aktuellt fönster före dagens stängning och före ett eventuellt periodavslut som bekräftas samma dag. De två villkoren kräver giltigt underlag var för sig.
-- Färgsättningen ritar endast markerade candles på originalbarens öppning, högsta, lägsta och stängning, så kropp och veke får samma extremfärg. Övriga bars behåller diagrammets färger och stil.
-- I tabellen markeras Current Stretch när avståndsvillkoret nås och Current Duration när längd- och medianvillkoren nås. Färgerna beskriver historisk ovanlighet. När diagrammet laddar mer äldre historik eller om datakällan ändras kan en tidigare fördelning få ett annat underlag.
+- **Color Extreme Candles** är av som standard. Standardtrösklarna är **P95** för ett positivt avstånd och **P5** för ett negativt. Extreme Percentile kan väljas från 55 till 100. Den nedre tröskeln är `100 − vald percentil`. Trösklarna interpoleras linjärt i den samlade sorterade fördelningen av signerade dagsavstånd, inklusive noll. Föregående bekräftade observationer i valt fönster används och minst 30 från den berörda sidan krävs.
+- Endast inträdet i en extremzon skapar en händelse. Vid standardvärden återställs röd zon först under P90 eller vid stängning på eller under SMA. Grön zon återställs först över P10 eller vid stängning på eller över SMA. För andra val ligger återställningspercentilen fem percentilsteg närmare medianen. Ett explicit ogiltigt pris räcker inte för att återställa zonen. Händelser kan därmed fortsätta beskriva samma avvikelse när priset rör sig omkring yttertröskeln.
+- Markerade candles använder värdbarens faktiska öppning, högsta, lägsta och stängning. Current Stretch i tabellen markeras om senaste dagsstängningen gav en händelse. Current Duration är en separat beskrivning. Ett framtida jämförande test kan dela redan bekräftade extremhändelser efter varaktighetspercentil vid inträdet och mäta hur urvalet förändras innan varaktighet får påverka markeringen.
+- Färgerna beskriver historisk ovanlighet. Nyare prisrörelser påverkar bara senare bedömningar. Om TradingView laddar äldre historik eller ändrar prisdata kan en tidigare referensfördelning få annat underlag.
 
 ### Deterministiska P01-exempel
 
