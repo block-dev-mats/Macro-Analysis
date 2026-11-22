@@ -1,5 +1,24 @@
 # Status
 
+## P03
+
+**Panel View → Dips** visar Active Dip och historisk frekvens för bekräftat avslutade nedgångsepisoder. Varje avslut startar om den lokala referensen. Reversal och de fyra trösklarna är valbara. Overview visar P02-måtten. [Beslutad episodmetod](METRICS.md#lokala-nedgångsepisoder-och-frekvens)
+
+### Verifiering den 22 november 2026
+
+- Slutkällan kompilerades i TradingView Desktop och sparades i den befintliga privata Macro Analysis-indikatorn från VS Code. På **XETR_DLY:SXR8, 1D, SEK** matchade Overview P02:s avkastning, drawdowns och SMA 200D. Ändringen berör ingen SMA-beräkning.
+- Med standardtrösklar och 5 % reversal gav SXR8 42, 9, 3 och 0 avslutade episoder vid ≥5, ≥10, ≥20 respektive ≥30 % under 5 904 observerade kalenderdagar. Panelen visade `2.6/y`, `1/1.8y`, `1/5.4y` och `0`. Active Dip var −8,26 %. Tooltips visade antal, datumspann, täckning och båda frekvensmåtten vid positivt antal.
+- **BINANCE:PUMPU, 1D** visade −45,73 % Active Dip och `N/A` för frekvenserna. Tooltipen för ≥5 % visade 11 avslutade episoder och 87 observerade kalenderdagar till 2026-11-21 medan dagsbaren den 22 november var öppen.
+- **BINANCE:BTCUSDT, 1D** behöll −30,48 % Active Dip och samma frekvenser till 2026-11-21 när priset i den öppna dagsbaren ändrades från 60 744,99 till 60 740,01 USDT.
+- **SXR8, 1W** visade **Use a 1D chart**. En dubblett bland trösklarna visade **Enter increasing dip thresholds** med Active Dip kvar. En extra rad med vynamnet placerar Active Dip under TradingViews överliggande chartknappar.
+- Nio syntetiska sekvenser passerade i Pine och i en oberoende Python-beräkning med exakta rationella tal. De täckte separata och ofullständiga episoder, exakt reversal och tröskel, upprepade toppar och bottnar, återtagen topp och explicita dataluckor. Pine kontrollerade även 365/366 dagar, kort historik, noll episoder och visning i år per episod. [Syntetiska fall](METRICS.md#deterministiska-p03-exempel)
+
+Frekvenserna beskriver laddade data. En verklig sessionsstängning där en pågående episod avslutades följdes inte.
+
+### Nästa steg
+
+Avgränsa P04 till varaktighet för de lokala episoderna. Mät kalenderdagar från topp till botten och från botten till bekräftat avslut, och verifiera hur lika bottnar och avbrott påverkar datumen.
+
 ## P02
 
 Macro Analysis visar nu kalenderbaserad prisavkastning för 1Y, 3Y, 5Y och 10Y med referensdatum i tooltips. SMA har valbar längd och beräkningsintervall på en gemensam inställningsrad med kryssruta för linjen. Weekly och Monthly har valbar utjämning för både linjen och SMA-måtten. Panelen visar datum och mått på sju rader och kan placeras i valfritt hörn. [Måttdefinitioner](METRICS.md#beslutat)
@@ -14,10 +33,6 @@ Macro Analysis visar nu kalenderbaserad prisavkastning för 1Y, 3Y, 5Y och 10Y m
 - En tillfällig Pine-kontroll passerade kalenderfall för helg, börshelgdag, 29 februari och sekelår, för kort historik samt ogiltig och senare giltig referensstängning. Den tillfälliga kontrollinstansen togs bort. En lokal Python-kontroll jämförde den begränsade datumuppslagningen med full historik efter att lagringsfönstret hade gått runt. [Reproducerbara exempel](METRICS.md#deterministiska-p02-exempel)
 
 Historiken och dess eventuella luckor beror på TradingViews prisserie. En verklig övergång mellan två bekräftade vecko- eller månadsperioder följdes inte.
-
-### Nästa steg
-
-P03 kan avgränsas till en deterministisk ATH-baserad drawdown-episod med start, botten och återhämtning. Verifiera först hur pågående och avslutade episoder räknas. [Metodförslag](METRICS.md#drawdown-episoder)
 
 ## P01
 

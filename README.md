@@ -8,7 +8,9 @@ För Weekly och Monthly kan du aktivera **Smooth SMA**. Linjen, **MA Distance** 
 
 Panelen visar prisavkastning sedan start och för 1, 3, 5 och 10 kalenderår, CAGR, drawdowns och SMA-mått. Periodvärdenas tooltips visar faktiska referensdatum. Vecko- och intradagsintervall får ett meddelande om att 1D krävs.
 
-Mätperioden slutar vid den senaste bekräftade dagsbaren. Resultaten bygger på den historik som TradingView har laddat och chartens prisserie, inklusive eventuella val av valuta och justeringar. [Verifiering och nästa steg](docs/STATUS.md#p02)
+Med **Panel View → Dips** visas aktuell nedgång från den lokala toppen och historisk frekvens för återhämtade nedgångsepisoder. Trösklar och återhämtningskrav kan ställas in. Antal och täckning visas i tooltips.
+
+Mätperioden slutar vid den senaste bekräftade dagsbaren. Resultaten bygger på den historik som TradingView har laddat och chartens prisserie, inklusive eventuella val av valuta och justeringar. [Verifiering och nästa steg](docs/STATUS.md#p03)
 
 - Produktmål, användningsflöde och avgränsning. [Projektbeskrivning](docs/PROJECT_BRIEF.md)
 - Datakrav, mått och räkneexempel. [Måttdefinitioner](docs/METRICS.md)

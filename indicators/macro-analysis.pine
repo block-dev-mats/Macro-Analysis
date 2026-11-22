@@ -19,6 +19,14 @@ string smaTimeframe = input.string("Daily", "", options = ["Daily", "Weekly", "M
 bool showSma = input.bool(true, "", inline = "sma", tooltip = "Length, timeframe, and whether to show the SMA line.")
 bool smoothSma = input.bool(false, "Smooth SMA", active = smaTimeframe != "Daily", tooltip = "Moves gradually to the next confirmed weekly or monthly SMA. The panel and line use the same value.")
 string panelCorner = input.string("Top right", "Panel corner", options = ["Top right", "Top left", "Bottom right", "Bottom left"])
+string panelView = input.string("Overview", "Panel View", options = ["Overview", "Dips"])
+bool showDips = panelView == "Dips"
+float dipFirst = input.float(5, "Dip thresholds (%)", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
+float dipSecond = input.float(10, "", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
+float dipThird = input.float(20, "", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
+float dipFourth = input.float(30, "", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips, tooltip = "Enter four thresholds in strictly increasing order.")
+float reversal = input.float(5, "Reversal %", minval = 0.01, active = showDips)
+bool orderedThresholds = dipFirst < dipSecond and dipSecond < dipThird and dipThird < dipFourth
 bool isDaily = timeframe.isdaily and timeframe.multiplier == 1
 bool supportedChart = isDaily and chart.is_standard
 bool confirmedDay = supportedChart and barstate.isconfirmed
@@ -41,6 +49,56 @@ var int sessionCount = 0
 
 changePercent(float value, float reference) =>
     100 * (value / reference - 1)
+
+advanceDip(float top, float bottom, float price, float reversalPct) =>
+    float nextTop = top
+    float nextBottom = bottom
+    float depth = na
+    if na(price)
+        nextTop := na
+        nextBottom := na
+    else if na(top)
+        nextTop := price
+    else if na(bottom)
+        if math.sign(price - top) < 0
+            nextBottom := price
+        else
+            nextTop := price
+    else
+        nextBottom := math.min(bottom, price)
+        if math.sign(price - top) >= 0 or changePercent(price, nextBottom) >= reversalPct
+            depth := -changePercent(nextBottom, top)
+            nextTop := price
+            nextBottom := na
+    [nextTop, nextBottom, depth]
+
+var float dipTop = na
+var float dipBottom = na
+var int previousValidDipDay = na
+var int observedDipDays = 0
+var int invalidDipBars = 0
+var int interruptedDips = 0
+var array<float> thresholds = array.from(dipFirst, dipSecond, dipThird, dipFourth)
+var array<int> dipCounts = array.new<int>(4, 0)
+
+if confirmedDay and showDips
+    if na(confirmedClose)
+        invalidDipBars += 1
+        if not na(dipBottom)
+            interruptedDips += 1
+        previousValidDipDay := na
+    else
+        if not na(previousValidDipDay)
+            observedDipDays += int((time_tradingday - previousValidDipDay) / MS_PER_DAY)
+        previousValidDipDay := time_tradingday
+
+    [nextTop, nextBottom, closedDepth] = advanceDip(dipTop, dipBottom, confirmedClose, reversal)
+    dipTop := nextTop
+    dipBottom := nextBottom
+    if orderedThresholds and not na(closedDepth)
+        for [index, threshold] in thresholds
+            if closedDepth >= threshold
+                dipCounts.set(index, dipCounts.get(index) + 1)
 
 if confirmedDay
     int slot = sessionCount % PERIOD_HISTORY_SIZE
@@ -124,9 +182,12 @@ formatPeriod(int startDay, int endDay) =>
 band(table panel, int row, string heading, string tooltip = "") =>
     table.cell(panel, 0, row, heading, text_color = VALUE_COLOR, text_halign = text.align_left, text_size = size.small, bgcolor = SECTION_BG, tooltip = tooltip)
 
-metric(table panel, int column, int row, string label, float value, string tooltip) =>
+metricText(table panel, int column, int row, string label, string value, string tooltip) =>
     table.cell(panel, column, row, label, text_color = LABEL_COLOR, text_halign = text.align_left, text_size = size.small, tooltip = tooltip)
-    table.cell(panel, column + 1, row, formatPercent(value), text_color = na(value) ? MUTED_COLOR : VALUE_COLOR, text_halign = text.align_right, text_size = size.small, tooltip = tooltip)
+    table.cell(panel, column + 1, row, value, text_color = value == "N/A" ? MUTED_COLOR : VALUE_COLOR, text_halign = text.align_right, text_size = size.small, tooltip = tooltip)
+
+metric(table panel, int column, int row, string label, float value, string tooltip) =>
+    metricText(panel, column, row, label, formatPercent(value), tooltip)
 
 periodMetric(table panel, int column, int row, int yearsBack, int endDay, float endClose, int count) =>
     int target = na(endDay) ? na : yearsEarlier(endDay, yearsBack)
@@ -136,23 +197,71 @@ periodMetric(table panel, int column, int row, int yearsBack, int endDay, float 
         detail += " Latest confirmed close unavailable."
     metric(panel, column, row, str.tostring(yearsBack) + "Y", changePercent(endClose, refClose), detail)
 
+dipRates(int count, int observedDays, int startDay) =>
+    // An anniversary can be 365 or 366 days away. Use the same calendar
+    // convention as period returns and require that many covered days.
+    int yearDays = na(startDay) ? na : int((yearsEarlier(startDay, -1) - startDay) / MS_PER_DAY)
+    bool enoughHistory = not na(yearDays) and observedDays >= yearDays
+    float observedYears = observedDays / DAYS_PER_YEAR
+    float perYear = enoughHistory ? count / observedYears : na
+    float yearsPerDip = enoughHistory and count > 0 ? observedYears / count : na
+    [perYear, yearsPerDip]
+
+dipFrequencyText(int count, float perYear, float yearsPerDip) =>
+    na(perYear) ? "N/A" : count == 0 ? "0" : perYear >= 1 ? str.tostring(perYear, "0.0") + "/y" : "1/" + str.tostring(yearsPerDip, "0.0") + "y"
+
+dipMetric(table panel, int row, float threshold, int count, int startDay, string coverage) =>
+    [perYear, yearsPerDip] = dipRates(count, observedDipDays, startDay)
+    string detail = str.tostring(count) + " completed dips at or above this threshold."
+    detail += "\n" + coverage
+    if na(perYear)
+        detail += "\nAt least one calendar year of observed coverage is required for annualized rates."
+    else
+        detail += "\nPer year: " + str.tostring(perYear, "0.00")
+        if count > 0
+            detail += " · Years per dip: " + str.tostring(yearsPerDip, "0.00")
+    detail += "\nObserved frequency."
+    metricText(panel, 0, row, "≥" + str.tostring(threshold) + "%", dipFrequencyText(count, perYear, yearsPerDip), detail)
+
 string panelPosition = switch panelCorner
     "Top left" => position.top_left
     "Bottom right" => position.bottom_right
     "Bottom left" => position.bottom_left
     => position.top_right
 
-var table panel = table.new(panelPosition, 4, supportedChart ? 7 : 1, bgcolor = PANEL_BG, frame_color = SECTION_BG, frame_width = 1)
+bool dipsPanel = supportedChart and showDips
+int panelRows = not supportedChart ? 1 : dipsPanel ? (orderedThresholds ? 6 : 3) : 7
+var table panel = table.new(panelPosition, dipsPanel ? 2 : 4, panelRows, bgcolor = PANEL_BG, frame_color = SECTION_BG, frame_width = 1)
 if barstate.isfirst
-    table.merge_cells(panel, 0, 0, 3, 0)
-    if supportedChart
-        table.merge_cells(panel, 0, 5, 3, 5)
+    if dipsPanel
+        table.merge_cells(panel, 0, 0, 1, 0)
+        if not orderedThresholds
+            table.merge_cells(panel, 0, 2, 1, 2)
+    else
+        table.merge_cells(panel, 0, 0, 3, 0)
+        if supportedChart
+            table.merge_cells(panel, 0, 5, 3, 5)
 
 if barstate.islast
-    if supportedChart
-        // The panel stays on the previous confirmed bar throughout the open session.
-        int lastDay = barstate.isconfirmed ? time_tradingday : time_tradingday[1]
-        float lastClose = barstate.isconfirmed ? confirmedClose : confirmedClose[1]
+    // Both views stay on the previous confirmed bar throughout the open session.
+    int lastDay = barstate.isconfirmed ? time_tradingday : time_tradingday[1]
+    float lastClose = barstate.isconfirmed ? confirmedClose : confirmedClose[1]
+    if dipsPanel
+        band(panel, 0, "Dips")
+        string activeDetail = "Latest confirmed close relative to the current local peak."
+        if na(lastClose)
+            activeDetail += " Latest confirmed close unavailable."
+        metric(panel, 0, 1, "Active Dip", changePercent(lastClose, dipTop), activeDetail)
+        if orderedThresholds
+            string coverage = formatPeriod(firstDay, lastDay)
+            coverage += " · " + str.tostring(observedDipDays, "#,##0") + " observed calendar days."
+            if invalidDipBars > 0
+                coverage += "\n" + str.tostring(invalidDipBars) + " invalid closes · " + str.tostring(interruptedDips) + " interrupted dips excluded."
+            for [index, threshold] in thresholds
+                dipMetric(panel, index + 2, threshold, dipCounts.get(index), firstDay, coverage)
+        else
+            band(panel, 2, "Enter increasing dip thresholds")
+    else if supportedChart
         float lastSma = barstate.isconfirmed ? smaForDay : smaForDay[1]
 
         int days = int((lastDay - firstDay) / MS_PER_DAY)

@@ -23,6 +23,16 @@
 - Max drawdown är det lägsta observerade drawdownvärdet sedan första giltiga stängningen. En återhämtning behåller det historiska maxvärdet. Kräv två giltiga dagsobservationer. Utan dem visas `N/A`.
 - Redovisa drawdowns från historiska toppar och swing-episoder som egna mått. Redovisa avslutade respektive pågående episoder och räkna varje identifierad episod en gång inom sitt mått.
 
+### Lokala nedgångsepisoder och frekvens
+
+- **Dips** använder bekräftade dagsstängningar. Den första giltiga stängningen i varje sammanhängande avsnitt sätter en lokal topp. Toppen följer stigande stängningar tills en lägre stängning startar en episod. Lika toppar startar ingen episod. Under en pågående episod ligger toppen fast och botten är den lägsta stängningen som hittills observerats.
+- Episoden avslutas när en stängning når den lokala toppen eller stiger minst **Reversal %** från episodens botten. Resultatet registreras vid den stängningen, som också blir nästa lokala referenstopp. Standard är 5 %. Episodens djup är `100 × (1 − botten / episodtopp)`. Historiska toppar används separat för **Current DD** och **Max DD**.
+- Varje avslutad episod räknas en gång per uppnådd tröskel, inklusive exakt träff. Trösklarna har standardvärdena 5, 10, 20 och 30 %. Ange fyra strikt stigande värden. Dubbletter och omvänd ordning ger ett inställningsmeddelande i Dips tills värdena rättats.
+- **Active Dip** är `100 × (senaste bekräftade stängning / lokal topp − 1)`. En stängning som etablerar en topp eller avslutar en episod ger 0 %. En ogiltig senaste stängning ger `N/A`. En pågående episod bidrar först till frekvensen när den har avslutats.
+- En explicit ogiltig stängning bryter det pågående avsnittet. En öppen episod vid avbrottet utelämnas ur episodantalen och nästa giltiga stängning sätter en ny topp. Observerad kalendertid är summan av dagar mellan intilliggande giltiga stängningar inom varje avsnitt. Intervall över en explicit ogiltig bar räknas bort. Normala sessionsuppehåll ingår. En helt utebliven bar kan inte skiljas från ett sessionsuppehåll. Om laddad historik börjar mitt i en äldre nedgång kan mätningen börja först vid den första laddade giltiga stängningen.
+- Observerade år är observerade kalenderdagar dividerat med 365,25. Frekvensen per år är antal avslutade episoder dividerat med observerade år. Genomsnittliga år per episod är det omvända vid positivt antal. Annualisering kräver minst lika många observerade dagar som från första giltiga sessionsdatumet till dess ettårsdag, med 28 februari i målår utan skottdag. Vid kortare täckning visas `N/A`. Med tillräcklig täckning och noll avslutade episoder visas `0`.
+- Dips visar återkomst per år när frekvensen är minst en gång per år och annars en gång per genomsnittligt antal år. Tooltipen ger antal, datumspann och observerad täckning. Värdena beskriver historisk förekomst.
+
 ### MA Behavior
 
 - SMA är det aritmetiska medelvärdet av det valda antalet på varandra följande giltiga bekräftade stängningar på **Daily**, **Weekly** eller **Monthly**. Standard är 200 dagar och minsta längd är 2 barer på det valda intervallet. En explicit ogiltig stängning på det valda intervallet bryter dess fönster.
@@ -51,16 +61,26 @@
 | Slutdatum 29 februari 2024. | 1Y, 3Y, 5Y och 10Y har måldatum den 28 februari i respektive målår. |
 | Måldatum 21 november 2023. Stängningen den 20 november är `na` och den 22 november är giltig. | Referensen för den 21 november är osäker och ger `N/A`. Med måldatum 22 november används den giltiga stängningen. |
 
+### Deterministiska P03-exempel
+
+| Stängningar med 5 % reversal | Avslutade episoddjup och aktiv nedgång |
+| --- | --- |
+| `100 → 94 → 100 → 80 → 100` | 6 % och 20 %. Antal vid ≥5, ≥10, ≥20 och ≥30 % är 2, 1, 1 och 0. |
+| `100 → 94 → 95 → 80 → 84` | En episod på 20 %. Stängning 84 uppfyller exakt 5 % reversal från 80. |
+| `100 → 94 → 95 → 80` | 0 avslutade. Active Dip är −20 %. |
+| `100 → 90 → 96 → 89 → 95` | Två episoder på 10 % och cirka 7,29 %. Den andra lokala toppen är 96. |
+| `100 → 100 → 95 → 95 → 99,74 → 99,75` | Lika topp och botten ger inga dubletter. En episod träffar 5 % djup och reversal exakt. |
+| `100 → 70 → na → 80 → 72 → 76` | Första avsnittets pågående episod avbryts. En bekräftad episod på 10 % räknas från den nya toppen 80. |
+
 ## Förslag
 
 ### Datatäckning
 
 Markera identifierade datagap när det finns tillräckligt underlag för att skilja dem från planerade sessionsuppehåll. En framtida beräkning på 1W måste behandla hela den underliggande dagssekvensen innan resultatet visas på veckocharten. Samma krav på bevarade dagsobservationer gäller intraday.
 
-### Drawdown-episoder
+### Varaktighet och återhämtning till historisk topp
 
 - En episod börjar vid första stängning under det löpande högsta värdet och avslutas vid första stängning på eller över den nivån. Använd den senaste stängningen på toppnivån före nedgången som toppdatum. Botten är den första lägsta stängningen inom episoden. Mät kalenderdagar från topp till botten och från botten till återhämtning. För en pågående episod är botten preliminär och återhämtningstiden `N/A`.
-- Beräkna frekvens som antalet episoder under angiven mätperiod. Vid ett tröskelvärde, till exempel 10, 20 eller 30 procent, räknas en episod när dess största fall når eller passerar tröskeln. Siffrorna är kumulativa mellan trösklarna. Mellanliggande svängningar inom samma oåterhämtade drawdown ger ingen ytterligare episod.
 - Räkna en episod som passerar ett identifierat datagap som osäker. Håll den utanför antalen för säkert avslutade och pågående episoder. Max drawdown bygger på observerade stängningar. Visa begränsad täckning om gap kan dölja en djupare botten.
 
 ### MA Behavior
