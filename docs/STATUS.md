@@ -1,5 +1,25 @@
 # Status
 
+## P12
+
+**Compare** visar **MA Distance** och **MA Percentile** vid Opportunity-datumet för respektive valutagrupp. SMA, historikperiod och extremgränser följer befintliga inställningar. Rött och grönt visar svansar i den egna historiken. [Metod och datakrav](METRICS.md#ma-stretch-in-compare)
+
+### Verifiering den 23 november 2026
+
+- TradingView Desktop kompilerade slutkällan från VS Code och sparade **revision 35** i den befintliga indikatorn. Avanza sparades på SXR8 1D med Compare i SEK, 200D, femårsperiod och P95/P5. ACWI behöll stjärnan. Opportunity-raden visade **0,9 / 1,0 / 0,8 / 0,9 / 0,3** och Dip Rarity **61,7 / 85,0 / 69,4 / 80,1 / 33,0 %**.
+- En separat Pine-kontroll använde MA Behavior i varje fonds egen dagskontext och tog fram percentilen oberoende från tidigare avstånd. Den stämde med de visade värdena för **50D, 200D, 50W och 12M i SEK**, med och utan Smooth för 50W och 12M. Vecko- och månads-omräkningen kontrollerades mot ett separat medelvärde av avslutade perioders SEK-dagsstängningar. I Native stämde 12M för alla fem. EUR-gruppen använde **2026-11-20**, SEK och USD **2026-11-19**. ACWI 12M visade **+5,15 % / P46,9** i SEK och **−2,22 % / P18,4** i USD.
+- P90/P10 gav grön text för ACWI och VWCE med 50D. P70/P30 gav röd text för XACTHDIV med 200D. Tioårsfönstret visade percentil `N/A` för VWCE och XACTHDIV med 200D och behöll deras avstånd. All Available kunde visa percentil igen. 200M visade `N/A` enbart där respektive underlag saknades. På 1W visade Compare instruktionen att använda 1D medan SMA-linjen och candle-färger visades.
+- Syntetiska Pine-kontroller passerade för exakt P95/P5, interpolation, neutral exakt MA-träff, 29 tidigare observationer på aktuell sida, kort historik, olika sessionsdatum, saknad valuta och avgränsning mot data efter cutoff. En separat lokal beräkning från SXR8:s exporterade dagskurser matchade 50D och 200D inklusive de 1 274 tidigare sessionerna. P10:s inträdesantal röd/grön återkom för SXR8 (**12/8** och **11/4**) och BTCUSDT spot (**3/4** och **0/1**) med 50D respektive 200D.
+- Pine Profiler på femsymbolsvyn i SEK med 200D och candle-färger på gav ungefär **0,57 s för P10** och **0,68 s för P12**. Den externa statistikförfrågan tog **381,7 ms** respektive **429 ms**, båda med **29 495 exekveringar**. Varje kontext sorterar en kopia av avstånden enbart vid färska stängningar. Högst fem skalära MA-resultat hämtas per extern symbol tillsammans med befintlig statistik. Tiderna är enskilda mätningar. Pine kompilerar med konsistensvarningar kring kontextberoende anrop och kombinationerna ovan körde utan exekveringsfel. [Pines resursgränser](https://www.tradingview.com/pine-script-docs/writing/limitations/)
+
+| Symbol, SEK 2026-11-19 | MA Distance 50D | MA Percentile 50D | MA Distance 200D | MA Percentile 200D |
+| --- | ---: | ---: | ---: | ---: |
+| SXR8 | −2,15 % | P13,1 | +6,04 % | P48,6 |
+| ACWI | −4,16 % | P5,3 | +2,54 % | P33,5 |
+| EUNL | −2,22 % | P11,3 | +5,11 % | P47,7 |
+| VWCE | −2,87 % | P7,9 | +4,01 % | P40,8 |
+| XACTHDIV | +0,84 % | P50,7 | +4,67 % | P74,8 |
+
 ## P10
 
 SMA, **MA Behavior** och extremfärger följer med vid byte av tidsintervall. Måtten använder symbolens dagssekvens. Extremfärger markerar inträdet i en svans av signerade avstånd, med P95/P5 som standard och ett separat återställningsband. Overview, Dips och Compare kör vidare på 1D. [Tidsintervall och extremmodell](METRICS.md#ma-behavior)

@@ -25,15 +25,15 @@ const int MIN_MA_RUNS = 10
 int smaLength = input.int(200, "SMA", minval = 2, inline = "sma")
 string smaTimeframe = input.string("Daily", "", options = ["Daily", "Weekly", "Monthly"], inline = "sma")
 bool showSma = input.bool(true, "", inline = "sma", tooltip = "Length, timeframe, and whether to show the SMA line.")
-bool smoothSma = input.bool(false, "Smooth SMA", active = smaTimeframe != "Daily", tooltip = "Moves gradually to the next confirmed weekly or monthly SMA. The panel and line use the same value.")
+bool smoothSma = input.bool(false, "Smooth SMA", active = smaTimeframe != "Daily", tooltip = "Moves gradually to the next confirmed weekly or monthly SMA.")
 string panelCorner = input.string("Top right", "Panel corner", options = ["Top right", "Top left", "Bottom right", "Bottom left"])
 string panelView = input.string("Overview", "Panel View", options = ["Overview", "Dips", "Compare", "MA Behavior"])
 bool showDips = panelView == "Dips"
 bool showCompare = panelView == "Compare"
 bool showMaBehavior = panelView == "MA Behavior"
 bool colorExtremeCandles = input.bool(false, "Color Extreme Candles")
-int maExtremePercentile = input.int(95, "Extreme Percentile", minval = 55, maxval = 100, active = showMaBehavior or colorExtremeCandles, tooltip = "Upper percentile of signed daily distances. The lower threshold uses the complementary percentile. A new event requires leaving the zone.")
-string maStatisticsPeriod = input.string("5 Years", "MA Statistics Period", options = ["5 Years", "10 Years", "All Available"], active = showMaBehavior or colorExtremeCandles)
+int maExtremePercentile = input.int(95, "Extreme Percentile", minval = 55, maxval = 100, active = showCompare or showMaBehavior or colorExtremeCandles, tooltip = "Upper percentile of signed daily distances. The lower threshold uses the complementary percentile. A new event requires leaving the zone.")
+string maStatisticsPeriod = input.string("5 Years", "MA Statistics Period", options = ["5 Years", "10 Years", "All Available"], active = showCompare or showMaBehavior or colorExtremeCandles)
 bool compareInSEK = input.string("SEK", "Compare currency", options = ["SEK", "Native"], active = showCompare) == "SEK"
 float dipFirst = input.float(5, "Dip thresholds (%)", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
 float dipSecond = input.float(10, "", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
@@ -195,20 +195,42 @@ completedSmas(int length) =>
     float mean = consecutiveSma(validPrice(close), length)
     [nz(mean[1]), nz(mean[2])]
 
+smoothCompletedSma(float mean, float earlier, string period) =>
+    float result = mean
+    if smoothSma and not na(mean) and math.sign(earlier) == 1
+        int periodStart = time(period)
+        int periodEnd = time_close(period)
+        if periodEnd > periodStart
+            float progress = math.max(0.0, math.min(1.0, float(time_close - periodStart) / (periodEnd - periodStart)))
+            result := earlier + progress * (mean - earlier)
+    result
+
 maForDailyClose(float dailyClose) =>
     float mean = consecutiveSma(dailyClose, smaLength)
     if smaTimeframe != "Daily"
         string requestedTimeframe = smaTimeframe == "Weekly" ? "1W" : "1M"
         // Compute in the daily context even when the chart itself is weekly or monthly.
         [completedSma, earlierSma] = request.security(syminfo.tickerid, requestedTimeframe, completedSmas(smaLength), lookahead = barmerge.lookahead_on)
-        mean := validPrice(completedSma)
-        if smoothSma and not na(mean) and math.sign(earlierSma) == 1
-            int periodStart = time(requestedTimeframe)
-            int periodEnd = time_close(requestedTimeframe)
-            if periodEnd > periodStart
-                float progress = math.max(0.0, math.min(1.0, float(time_close - periodStart) / (periodEnd - periodStart)))
-                mean := earlierSma + progress * (mean - earlierSma)
+        mean := smoothCompletedSma(validPrice(completedSma), earlierSma, requestedTimeframe)
     mean
+
+compareSma(float price, bool converted) =>
+    if not converted or smaTimeframe == "Daily"
+        maForDailyClose(price)
+    else
+        string period = smaTimeframe == "Weekly" ? "1W" : "1M"
+        bool newPeriod = timeframe.change(period) and not na(time(period)[1])
+        // Take the already converted last daily close only after its period ends.
+        float periodClose = newPeriod ? price[1] : na
+        float average = ta.sma(periodClose, smaLength)
+        var int streak = 0
+        var float mean = na
+        var float earlier = na
+        if newPeriod
+            streak := na(periodClose) ? 0 : streak + 1
+            earlier := mean
+            mean := streak >= smaLength ? average : na
+        smoothCompletedSma(mean, earlier, period)
 
 float smaForDay = supportedChart ? maForDailyClose(confirmedClose) : na
 
@@ -237,16 +259,20 @@ type MaDistribution
 newMaDistribution() =>
     MaDistribution.new(array.new<float>(), array.new<MaSample>())
 
-upperBound(array<float> ordered, float value) =>
+distanceBound(array<float> ordered, float value, bool inclusive) =>
     int first = 0
     int last = ordered.size()
     while first < last
         int mid = first + int((last - first) / 2)
-        if math.sign(ordered.get(mid) - value) <= 0
+        float direction = math.sign(ordered.get(mid) - value)
+        if direction < 0 or (inclusive and direction == 0)
             first := mid + 1
         else
             last := mid
     first
+
+upperBound(array<float> ordered, float value) =>
+    distanceBound(ordered, value, true)
 
 method includeSample(MaDistribution distribution, int day, float value, bool keepDates) =>
     int position = upperBound(distribution.ordered, value)
@@ -300,9 +326,12 @@ method signedDistanceAt(MaHistory history, int index) =>
     int nonpositive = below + history.equalCount
     index < below ? -history.belowDistances.ordered.get(below - index - 1) : index < nonpositive ? 0.0 : history.aboveDistances.ordered.get(index - nonpositive)
 
+percentilePosition(int count, int percentile) =>
+    (count - 1) * percentile / 100.0
+
 method signedPercentile(MaHistory history, int percentile) =>
     int count = history.aboveDistances.ordered.size() + history.belowDistances.ordered.size() + history.equalCount
-    float position = (count - 1) * percentile / 100.0
+    float position = percentilePosition(count, percentile)
     int left = int(math.floor(position))
     float lower = history.signedDistanceAt(left)
     float upper = history.signedDistanceAt(int(math.ceil(position)))
@@ -577,6 +606,77 @@ type ComparisonSnapshot
 recentSession(int day, int target) =>
     not na(day) and day <= target and day >= target - OPPORTUNITY_LAG_DAYS * MS_PER_DAY
 
+type MaComparison
+    int day
+    float distance
+    float percentile = na
+    int extreme = 0
+    int firstPriorDay = na
+    int lastPriorDay = na
+    int priorCount = 0
+    int sideCount = 0
+    bool covered = false
+
+type CompareMaHistory
+    array<int> days
+    array<float> distances
+    array<MaComparison> recent
+
+newCompareMaHistory() =>
+    CompareMaHistory.new(array.new<int>(), array.new<float>(), array.new<MaComparison>())
+
+sortedPercentile(array<float> ordered, int percentile) =>
+    float position = percentilePosition(ordered.size(), percentile)
+    int left = int(math.floor(position))
+    float lower = ordered.get(left)
+    lower + (ordered.get(int(math.ceil(position))) - lower) * (position - left)
+
+signedPercentileRank(array<float> ordered, float distance) =>
+    int left = distanceBound(ordered, distance, false)
+    int right = upperBound(ordered, distance)
+    float position = 0.0
+    if left < right
+        position := (left + right - 1) / 2.0
+    else if left == ordered.size()
+        position := left - 1
+    else if left > 0
+        float lower = ordered.get(left - 1)
+        position := left - 1 + (distance - lower) / (ordered.get(left) - lower)
+    100.0 * position / (ordered.size() - 1)
+
+method addMaClose(CompareMaHistory history, int day, float price, float mean) =>
+    float distance = 100 * (price - mean) / mean
+    if recentSession(day, comparisonAnchor)
+        MaComparison snapshot = MaComparison.new(day, distance)
+        int count = history.days.size()
+        int cutoff = maYears > 0 ? yearsEarlier(day, maYears) : na
+        if count > 0
+            int first = history.days.first()
+            snapshot.covered := na(cutoff) or first <= cutoff
+            int index = na(cutoff) or first >= cutoff ? 0 : history.days.last() < cutoff ? count : history.days.binary_search_rightmost(cutoff)
+            snapshot.priorCount := count - index
+            if snapshot.priorCount > 0
+                snapshot.firstPriorDay := history.days.get(index)
+                snapshot.lastPriorDay := history.days.last()
+            // Sort a copy only for recent endpoints, before adding today's close.
+            if snapshot.covered and snapshot.priorCount >= MIN_MA_DISTANCES and not na(distance)
+                array<float> sorted = history.distances.slice(index, count).copy()
+                sorted.sort()
+                int side = int(math.sign(distance))
+                snapshot.sideCount := side > 0 ? sorted.size() - upperBound(sorted, 0.0) : side < 0 ? distanceBound(sorted, 0.0, false) : sorted.size()
+                if snapshot.sideCount >= MIN_MA_DISTANCES
+                    snapshot.percentile := signedPercentileRank(sorted, distance)
+                    if side > 0 and distance >= sortedPercentile(sorted, maExtremePercentile)
+                        snapshot.extreme := 1
+                    else if side < 0 and distance <= sortedPercentile(sorted, 100 - maExtremePercentile)
+                        snapshot.extreme := -1
+        if history.recent.size() == OPPORTUNITY_LAG_DAYS + 1
+            history.recent.shift()
+        history.recent.push(snapshot)
+    if not na(distance)
+        history.days.push(day)
+        history.distances.push(distance)
+
 dipRarityCounts(PriceHistory prices, int startIndex, int endIndex, float cutoffDrawdown) =>
     int deep = 0
     int days = endIndex - startIndex + 1
@@ -631,7 +731,7 @@ recentComparisons(PriceHistory prices, int anchor) =>
                     snapshots.push(snapshot)
     snapshots
 
-comparisonMetrics(PriceHistory prices, DipHistory dips, int oneYear, int threeYears, int fiveYears, bool useSEK) =>
+comparisonMetrics(PriceHistory prices, DipHistory dips, CompareMaHistory ma, int oneYear, int threeYears, int fiveYears, bool useSEK) =>
     [ref1, close1] = referenceForAnchor(prices, oneYear)
     [ref3, close3] = referenceForAnchor(prices, threeYears)
     [ref5, close5] = referenceForAnchor(prices, fiveYears)
@@ -646,23 +746,28 @@ comparisonMetrics(PriceHistory prices, DipHistory dips, int oneYear, int threeYe
      history3 ? changePercent(prices.lastClose, close3) : na, history5 ? changePercent(prices.lastClose, close5) : na,
      changePercent(prices.lastClose, prices.peakClose), maximumDrawdown(prices), changePercent(prices.lastClose, dips.top), rate, interval,
      history3 ? periodCagr(ref3, close3, prices.lastDay, prices.lastClose) : na,
-     history5 ? periodCagr(ref5, close5, prices.lastDay, prices.lastClose) : na, recentComparisons(prices, comparisonAnchor)]
+     history5 ? periodCagr(ref5, close5, prices.lastDay, prices.lastClose) : na, recentComparisons(prices, comparisonAnchor),
+     recentSession(prices.lastDay, comparisonAnchor) ? ma.recent : na]
 
 remoteComparison(float reversalPct, int oneYear, int threeYears, int fiveYears, bool useSEK, float price, bool missingFx, int previousDay, float previousPrice, bool previousFxMissing) =>
     var PriceHistory prices = newPriceHistory()
     var DipHistory dips = DipHistory.new(array.new<int>(1, 0))
+    var CompareMaHistory ma = newCompareMaHistory()
     var array<float> levels = array.from(10.0)
+    float mean = compareSma(price, useSEK and syminfo.currency != currency.SEK)
     // The previous native bar is final even during a delayed feed's open bar.
     // Include the current native bar only if historical and past its own close.
     if not na(previousDay) and (na(prices.lastDay) or prices.lastDay < previousDay)
         prices.addClose(previousDay, previousPrice)
         prices.missingFx := prices.missingFx or previousFxMissing
         dips.addDipClose(previousDay, previousPrice, reversalPct, levels, true)
+        ma.addMaClose(previousDay, previousPrice, mean[1])
     if barstate.ishistory and time_close <= timenow and (na(prices.lastDay) or prices.lastDay < time_tradingday)
         prices.addClose(time_tradingday, price)
         prices.missingFx := prices.missingFx or missingFx
         dips.addDipClose(time_tradingday, price, reversalPct, levels, true)
-    comparisonMetrics(prices, dips, oneYear, threeYears, fiveYears, useSEK)
+        ma.addMaClose(time_tradingday, price, mean)
+    comparisonMetrics(prices, dips, ma, oneYear, threeYears, fiveYears, useSEK)
 
 const int ROW_CAGR = 0
 const int ROW_1Y = 1
@@ -674,6 +779,8 @@ const int ROW_ACTIVE_DIP = 6
 const int ROW_DIPS = 7
 const int ROW_OPPORTUNITY = 8
 const int ROW_RARITY = 9
+const int ROW_MA_DISTANCE = 10
+const int ROW_MA_PERCENTILE = 11
 
 type ComparisonColumn
     string tickerId
@@ -693,11 +800,12 @@ type ComparisonColumn
     float quality
     array<float> values
     array<ComparisonSnapshot> snapshots
+    array<MaComparison> maSnapshots
 
-comparisonColumn(string symbol, string quoteCurrency, int start, int finish, int ref1, int ref3, int ref5, int dipCount, int observed, int invalid, bool missingFx, float cagr, float ret1, float ret3, float ret5, float currentDD, float maxDD, float activeDip, float rate, float interval, float cagr3, float cagr5, array<ComparisonSnapshot> snapshots) =>
+comparisonColumn(string symbol, string quoteCurrency, int start, int finish, int ref1, int ref3, int ref5, int dipCount, int observed, int invalid, bool missingFx, float cagr, float ret1, float ret3, float ret5, float currentDD, float maxDD, float activeDip, float rate, float interval, float cagr3, float cagr5, array<ComparisonSnapshot> snapshots, array<MaComparison> maSnapshots) =>
     float quality = missingFx ? na : 0.7 * cagr3 + 0.3 * cagr5
     array<float> values = missingFx ? array.new<float>(ROW_OPPORTUNITY) : array.from(cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate)
-    ComparisonColumn.new(symbol, quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, interval, cagr3, cagr5, quality, values, snapshots)
+    ComparisonColumn.new(symbol, quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, interval, cagr3, cagr5, quality, values, snapshots, maSnapshots)
 
 canonicalSymbol(string tickerId) =>
     str.replace_all(ticker.standard(tickerId), "_DLY:", ":")
@@ -705,6 +813,10 @@ canonicalSymbol(string tickerId) =>
 var array<string> extraSymbols = array.new<string>()
 var array<ComparisonColumn> columns = array.new<ComparisonColumn>()
 if comparisonPanel
+    var CompareMaHistory ma = newCompareMaHistory()
+    float mean = compareInSEK and syminfo.currency != currency.SEK ? compareSma(comparisonClose, true) : smaForDay
+    if confirmedDay
+        ma.addMaClose(time_tradingday, comparisonClose, mean)
     if barstate.isfirst
         array<string> symbols = array.from(symbolA, symbolB, symbolC, symbolD)
         array<bool> enabled = array.from(includeA, includeB, includeC, includeD)
@@ -713,17 +825,17 @@ if comparisonPanel
             string standardSymbol = canonicalSymbol(symbol)
             if enabled.get(index) and symbol != "" and standardSymbol != chartSymbol and not extraSymbols.includes(standardSymbol)
                 extraSymbols.push(standardSymbol)
-    [quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5, opportunities] = comparisonMetrics(chartPrices, chartDips, oneYearTarget, threeYearTarget, fiveYearTarget, compareInSEK)
+    [quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5, opportunities, maSnapshots] = comparisonMetrics(chartPrices, chartDips, ma, oneYearTarget, threeYearTarget, fiveYearTarget, compareInSEK)
     if barstate.islast
         columns.clear()
-        columns.push(comparisonColumn(canonicalSymbol(syminfo.tickerid), quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5, opportunities))
+        columns.push(comparisonColumn(canonicalSymbol(syminfo.tickerid), quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5, opportunities, maSnapshots))
 if comparisonPanel
     for symbol in extraSymbols
-        [quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5, opportunities] = request.security(symbol, "1D",
+        [quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5, opportunities, maSnapshots] = request.security(symbol, "1D",
              remoteComparison(reversal, oneYearTarget, threeYearTarget, fiveYearTarget, compareInSEK, comparisonClose, comparisonFxMissing, time_tradingday[1], comparisonClose[1], comparisonFxMissing[1]),
              lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
         if barstate.islast
-            columns.push(comparisonColumn(symbol, quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5, opportunities))
+            columns.push(comparisonColumn(symbol, quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, currentDD, maxDD, activeDip, rate, interval, cagr3, cagr5, opportunities, maSnapshots))
 
 comparisonStart(ComparisonColumn asset, int row) =>
     switch row
@@ -902,8 +1014,51 @@ dipRarityDetail(ComparisonSnapshot snapshot, int cutoff, bool missingFx) =>
         detail += missingFx ? "\nSEK conversion incomplete." : "\nValid five-year coverage and a confirmed close near the cutoff are required."
     detail
 
+maComparisonForCutoff(ComparisonColumn asset, int cutoff) =>
+    MaComparison selected = na
+    if not asset.missingFx and not na(asset.maSnapshots) and not na(cutoff) and asset.lastDay >= cutoff
+        for snapshot in asset.maSnapshots
+            if snapshot.day > cutoff
+                break
+            if recentSession(snapshot.day, comparisonAnchor)
+                selected := snapshot
+    selected
+
+maComparisonDetail(ComparisonColumn asset, MaComparison snapshot, int cutoff, bool chartSymbol) =>
+    string period = maYears == 0 ? "All available" : str.tostring(maYears) + " years"
+    string detail = "SMA " + str.tostring(smaLength) + " " + smaTimeframe + (smoothSma and smaTimeframe != "Daily" ? " · Smooth" : "")
+    detail += na(asset.currency) ? "" : " · " + asset.currency
+    detail += "\nPrior signed daily distances · " + period
+    if not na(cutoff)
+        detail += "\nAs of " + formatDay(cutoff)
+    if asset.missingFx
+        detail += "\nSEK conversion incomplete."
+    else if na(cutoff)
+        detail += "\nNo Opportunity date for this currency."
+    else if na(snapshot)
+        detail += "\nNo confirmed coverage at the comparison date."
+    else
+        detail += "\nClose " + formatDay(snapshot.day)
+        if snapshot.priorCount > 0
+            detail += "\n" + formatPeriod(snapshot.firstPriorDay, snapshot.lastPriorDay) + " · " + str.tostring(snapshot.priorCount, "#,##0") + " prior sessions"
+        if na(snapshot.distance)
+            detail += "\nA valid close and SMA are required."
+        else if not snapshot.covered
+            detail += "\nMore valid SMA history is needed for this period."
+        else if na(snapshot.percentile)
+            detail += "\nAt least " + str.tostring(MIN_MA_DISTANCES) + " prior sessions are required" + (math.sign(snapshot.distance) != 0 ? " on this side." : ".")
+        else
+            detail += "\nExtreme thresholds P" + str.tostring(maExtremePercentile) + " / P" + str.tostring(100 - maExtremePercentile) + "."
+    if chartSymbol and compareInSEK and syminfo.currency != currency.SEK
+        detail += "\nThe chart SMA uses " + syminfo.currency + "."
+    detail
+
+maCell(table panel, int column, int row, string value, string detail, color extreme = na) =>
+    color valueColor = value == "N/A" or value == "—" ? MUTED_COLOR : na(extreme) ? VALUE_COLOR : extreme
+    table.cell(panel, column, row, value, text_color = valueColor, text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = detail)
+
 renderComparison(table panel, array<ComparisonColumn> assets, int firstRow) =>
-    var array<string> labels = array.from("CAGR", "1Y", "3Y", "5Y", "Current DD", "Max DD", "Active Dip", "Dips ≥10%", "Opportunity", "Dip Rarity")
+    var array<string> labels = array.from("CAGR", "1Y", "3Y", "5Y", "Current DD", "Max DD", "Active Dip", "Dips ≥10%", "Opportunity", "Dip Rarity", "MA Distance", "MA Percentile")
     [groups, leader, comparableGroups] = opportunityGroups(assets, comparisonAnchor)
     if firstRow > 0
         // Leave space for TradingView's chart controls in the top-right corner.
@@ -936,16 +1091,21 @@ renderComparison(table panel, array<ComparisonColumn> assets, int firstRow) =>
         bool validRarity = hasDipRarity(rarity)
         string rarityValue = validRarity ? formatDipRarity(rarity.rarityCount, rarity.rarityDays) : "N/A"
         table.cell(panel, column, firstRow + ROW_RARITY + 1, rarityValue, text_color = validRarity ? VALUE_COLOR : MUTED_COLOR, text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = dipRarityDetail(rarity, rarityCutoff, asset.missingFx))
+        int maCutoff = na(group) ? na : group.cutoff
+        MaComparison ma = maComparisonForCutoff(asset, maCutoff)
+        string detail = maComparisonDetail(asset, ma, maCutoff, index == 0)
+        float distance = na(ma) ? na : ma.distance
+        string distanceText = (math.sign(distance) == 1 ? "+" : "") + formatPercent(distance)
+        string percentileText = na(ma) or na(ma.percentile) ? "N/A" : "P" + str.tostring(ma.percentile, "0.0")
+        color extreme = na(ma) or ma.extreme == 0 ? na : ma.extreme > 0 ? LOW_COLOR : BEST_COLOR
+        maCell(panel, column, firstRow + ROW_MA_DISTANCE + 1, distanceText, detail, extreme)
+        maCell(panel, column, firstRow + ROW_MA_PERCENTILE + 1, percentileText, detail, extreme)
 
 formatMaDistance(float magnitude, bool above) =>
     na(magnitude) ? "N/A" : (above ? "+" : "−") + formatPercent(magnitude)
 
 formatMaDuration(float length) =>
     na(length) ? "N/A" : str.tostring(length, length == int(length) ? "#,##0" : "#,##0.0")
-
-maCell(table panel, int column, int row, string value, string detail, color extreme = na) =>
-    color valueColor = value == "N/A" or value == "—" ? MUTED_COLOR : na(extreme) ? VALUE_COLOR : extreme
-    table.cell(panel, column, row, value, text_color = valueColor, text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = detail)
 
 renderMaBehavior(table panel, MaSummary history, int firstRow) =>
     var array<string> labels = array.from("Time %", "Median Distance", "P90 Distance", "Median Duration", "P90 Duration", "Current Duration", "Current Stretch")
@@ -987,7 +1147,7 @@ string panelPosition = switch panelCorner
 
 bool dipsPanel = supportedChart and showDips
 int panelFirstRow = panelCorner == "Top right" ? 1 : 0
-int panelRows = maBehaviorPanel ? 8 + panelFirstRow : not supportedChart ? 1 : comparisonPanel ? ROW_RARITY + 2 + panelFirstRow : dipsPanel ? (orderedThresholds ? 6 : 3) : 7
+int panelRows = maBehaviorPanel ? 8 + panelFirstRow : not supportedChart ? 1 : comparisonPanel ? ROW_MA_PERCENTILE + 2 + panelFirstRow : dipsPanel ? (orderedThresholds ? 6 : 3) : 7
 int panelColumns = comparisonPanel ? 2 + extraSymbols.size() : maBehaviorPanel ? 3 : dipsPanel ? 2 : 4
 bool cellBackgrounds = comparisonPanel or maBehaviorPanel
 var table panel = table.new(panelPosition, panelColumns, panelRows, bgcolor = cellBackgrounds ? na : PANEL_BG, frame_color = SECTION_BG, frame_width = cellBackgrounds ? 0 : 1)
