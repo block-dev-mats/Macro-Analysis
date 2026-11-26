@@ -12,7 +12,7 @@ const int OPPORTUNITY_DECIMALS = 2
 const int MAX_VISIBLE_LEGS = 96
 const int SWING_RISK_WEEKS = 52
 const int STABLECOIN_MAX_AGE_DAYS = 2
-const int USDSEK_MAX_AGE_DAYS = 5
+const int FIAT_FX_MAX_AGE_DAYS = 5
 const float COMPARE_DIP_THRESHOLD = 10.0
 
 const color PANEL_BG = #171B23
@@ -48,7 +48,7 @@ bool colorExtremeCandles = input.bool(false, "Color Extreme Candles")
 bool showExtremeEntries = input.bool(false, "Show Extreme Entry Markers", tooltip = "Mark confirmed entries into extreme SMA-distance zones.")
 int maExtremePercentile = input.int(95, "Extreme Percentile", minval = 55, maxval = 100, active = showCompare or showMaBehavior or colorExtremeCandles or showExtremeEntries, tooltip = "Upper percentile of signed daily distances. The lower threshold uses the complementary percentile. A new entry requires leaving the zone.")
 string maStatisticsPeriod = input.string("5 Years", "MA Statistics Period", options = ["5 Years", "10 Years", "All Available"], active = showCompare or showMaBehavior or colorExtremeCandles or showExtremeEntries)
-bool compareInSEK = input.string("SEK", "Compare currency", options = ["SEK", "Native"], active = showCompare) == "SEK"
+string compareCurrency = input.string("SEK", "Compare currency", options = ["SEK", "EUR", "USD", "Native"], active = showCompare)
 string chartLines = input.string("Off", "Chart lines", options = ["Off", "Swing legs", "Dip episodes"],
      tooltip = "Standard 1D. Swing legs show structural moves, with exact daily endpoints. Dip episodes and Active Dip are available in Dips and Compare.")
 bool showSwingLegs = chartLines == "Swing legs"
@@ -56,7 +56,7 @@ bool showDipMarks = chartLines == "Dip episodes"
 float swingScale = input.float(2.0, "Swing scale", minval = 0.5, maxval = 5.0, step = 0.25, active = not showMaBehavior or showSwingLegs,
      tooltip = "Multiple of the median relative range of 52 completed weeks. Applies to chart swings and dip statistics.")
 bool useWicks = input.string("Close", "Drawdown prices", options = ["Close", "Wicks"], active = not showMaBehavior or showSwingLegs, tooltip = "Applied to drawdowns, dips and swing legs, Dip Rarity and Opportunity's drawdown. Returns and SMA use closing prices.") == "Wicks"
-bool showRarityMark = input.bool(false, "Dip Rarity reference", active = showCompare, tooltip = "Mark the chart symbol's Rarity drawdown on standard 1D. For SEK Compare, use SEK chart prices or select Native.")
+bool showRarityMark = input.bool(false, "Dip Rarity reference", active = showCompare, tooltip = "Mark the chart symbol's Rarity drawdown on standard 1D. The line uses chart prices and the value uses the comparison currency.")
 float dipFirst = input.float(5, "Dip thresholds (%)", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
 float dipSecond = input.float(10, "", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
 float dipThird = input.float(20, "", minval = 0, maxval = 100, inline = "dipThresholds", active = showDips)
@@ -75,10 +75,9 @@ bool supportedChart = isDaily and chart.is_standard
 bool supportedMaChart = chart.is_standard and (timeframe.isseconds or timeframe.isminutes or timeframe.isdwm)
 bool confirmedDay = supportedChart and barstate.isconfirmed
 bool comparisonPanel = supportedChart and showCompare
-bool chartCurrencyMatches = not comparisonPanel or not compareInSEK or syminfo.currency == currency.SEK
-bool dipMarksVisible = supportedChart and showDipMarks and (showDips or showCompare) and chartCurrencyMatches
-bool swingMarksVisible = supportedChart and showSwingLegs and chartCurrencyMatches
-bool rarityMarkVisible = comparisonPanel and showRarityMark and chartCurrencyMatches
+bool dipMarksVisible = supportedChart and showDipMarks and (showDips or showCompare)
+bool swingMarksVisible = supportedChart and showSwingLegs
+bool rarityMarkVisible = comparisonPanel and showRarityMark
 
 validPrice(float price) =>
     math.sign(price) == 1 ? price : na
@@ -90,8 +89,9 @@ type FxQuote
     string stablecoin
     float stableUsd
     int stableCloseAt
-    float usdSek
-    int usdCloseAt
+    string targetCurrency
+    float usdTarget
+    int targetCloseAt
 
 fxBeforeSession(float recent, int recentAt, float previous, int previousAt, int maxAge) =>
     bool useRecent = not na(recentAt) and recentAt <= time
@@ -99,53 +99,61 @@ fxBeforeSession(float recent, int recentAt, float previous, int previousAt, int 
     float price = useRecent ? recent : previous
     [not na(observedAt) and observedAt <= time and time - observedAt <= maxAge * MS_PER_DAY ? validPrice(price) : na, observedAt]
 
-stablecoinSekQuote(string stablecoin) =>
+stablecoinQuote(string stablecoin, simple string targetCurrency) =>
     string tickerId = stablecoin == "USDT" ? "KRAKEN:USDTUSD" : "KRAKEN:USDCUSD"
     [stable, stableAt, priorStable, priorStableAt] = request.security(tickerId, "1D", [close, time_close, close[1], time_close[1]],
          lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
-    [usd, usdAt, priorUsd, priorUsdAt] = request.security("FX_IDC:USDSEK", "1D", [close, time_close, close[1], time_close[1]],
-         lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
     [stableUsd, stableCloseAt] = fxBeforeSession(stable, stableAt, priorStable, priorStableAt, STABLECOIN_MAX_AGE_DAYS)
-    [usdSek, usdCloseAt] = fxBeforeSession(usd, usdAt, priorUsd, priorUsdAt, USDSEK_MAX_AGE_DAYS)
-    na(usdSek) ? na : FxQuote.new(stablecoin, nz(stableUsd, 1.0), na(stableUsd) ? na : stableCloseAt, usdSek, usdCloseAt)
-
-priceInCompareCurrency(float price, string quoteCurrency, bool useSEK) =>
-    float converted = price
-    if useSEK and (na(quoteCurrency) or quoteCurrency == "")
-        converted := na
-    else if useSEK and quoteCurrency != currency.SEK
-        // Request the raw close in SEK inside this symbol's own daily context.
-        converted := request.security(syminfo.tickerid, "1D", close, gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true, currency = currency.SEK)
-    validPrice(converted)
-
-wickPricesInCompareCurrency() =>
-    if compareInSEK and syminfo.currency != currency.SEK
-        request.security(syminfo.tickerid, "1D", [high, low], gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true, currency = currency.SEK)
+    [usdTarget, targetCloseAt] = if targetCurrency == currency.USD
+        [1.0, int(na)]
     else
-        [high, low]
+        string cross = targetCurrency == currency.EUR ? "FX_IDC:USDEUR" : "FX_IDC:USDSEK"
+        [current, currentAt, previous, previousAt] = request.security(cross, "1D", [close, time_close, close[1], time_close[1]],
+             lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+        fxBeforeSession(current, currentAt, previous, previousAt, FIAT_FX_MAX_AGE_DAYS)
+    na(usdTarget) ? na : FxQuote.new(stablecoin, nz(stableUsd, 1.0), na(stableUsd) ? na : stableCloseAt, targetCurrency, usdTarget, targetCloseAt)
 
-developingComparePrices(bool bridge, float rate) =>
-    if bridge
-        [time_tradingday, close * rate, high * rate, low * rate]
-    else if compareInSEK and syminfo.currency != currency.SEK
-        // Match the session before accepting a carried-forward value.
-        request.security(syminfo.tickerid, "1D", [time_tradingday, close, high, low], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true, currency = currency.SEK)
+// A currency-modified chart still supplies the line coordinates. Compare uses the underlying quote.
+string standardTicker = ticker.standard(syminfo.tickerid)
+[standardDay, standardClose, standardHigh, standardLow, nativeCurrency] = if comparisonPanel and standardTicker != syminfo.tickerid
+    request.security(standardTicker, "1D", [time_tradingday, close, high, low, syminfo.currency], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+else
+    [time_tradingday, close, high, low, syminfo.currency]
+bool chartPriceConverted = comparisonPanel and not na(nativeCurrency) and nativeCurrency != syminfo.currency
+string sourceTicker = chartPriceConverted ? standardTicker : syminfo.tickerid
+string comparisonCurrency = compareCurrency == "Native" ? nativeCurrency : compareCurrency
+string chartMeasureCurrency = comparisonPanel ? comparisonCurrency : syminfo.currency
+bool differentCurrency = comparisonCurrency != nativeCurrency
+bool comparisonUsesOwnPrices = chartPriceConverted or differentCurrency
+bool useStablecoinBridge = comparisonPanel and compareCurrency != "Native" and (nativeCurrency == "USDT" or nativeCurrency == "USDC")
+FxQuote comparisonFx = useStablecoinBridge ? stablecoinQuote(nativeCurrency, compareCurrency) : na
+float comparisonRate = na(comparisonFx) ? na : comparisonFx.stableUsd * comparisonFx.usdTarget
+int nativeDay = chartPriceConverted ? standardDay : time_tradingday
+float nativeClose = chartPriceConverted ? standardClose : close
+float nativeHigh = chartPriceConverted ? standardHigh : high
+float nativeLow = chartPriceConverted ? standardLow : low
+
+comparisonPrices(simple bool confirmed) =>
+    if na(nativeCurrency) or nativeCurrency == "" or (nativeCurrency == "NONE" and compareCurrency != "Native")
+        [int(na), float(na), float(na), float(na)]
+    else if useStablecoinBridge
+        [nativeDay, nativeClose * comparisonRate, nativeHigh * comparisonRate, nativeLow * comparisonRate]
+    else if differentCurrency
+        request.security(sourceTicker, "1D", [time_tradingday, close, high, low], gaps = confirmed ? barmerge.gaps_on : barmerge.gaps_off,
+             lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true, currency = comparisonCurrency)
     else
-        [time_tradingday, close, high, low]
+        [nativeDay, nativeClose, nativeHigh, nativeLow]
 
 float confirmedClose = confirmedDay ? validPrice(close) : na
-bool useStablecoinBridge = comparisonPanel and compareInSEK and (syminfo.currency == "USDT" or syminfo.currency == "USDC")
-FxQuote comparisonFx = useStablecoinBridge ? stablecoinSekQuote(syminfo.currency) : na
-float comparisonRate = na(comparisonFx) ? na : comparisonFx.stableUsd * comparisonFx.usdSek
-float comparisonClose = comparisonPanel ? (useStablecoinBridge ? validPrice(close * comparisonRate) : priceInCompareCurrency(close, syminfo.currency, compareInSEK)) : na
-[comparisonHigh, comparisonLow] = if useStablecoinBridge
-    [high * comparisonRate, low * comparisonRate]
-else if comparisonPanel and useWicks
-    wickPricesInCompareCurrency()
+[comparisonDay, measuredClose, measuredHigh, measuredLow] = if comparisonPanel
+    comparisonPrices(true)
 else
-    [float(na), float(na)]
-bool comparisonFxMissing = comparisonPanel and not na(validPrice(close)) and na(comparisonClose)
-bool comparisonWickFxMissing = comparisonPanel and useWicks and validWicks(high, low) and not validWicks(comparisonHigh, comparisonLow)
+    [int(na), float(na), float(na), float(na)]
+float comparisonClose = comparisonDay == time_tradingday ? validPrice(measuredClose) : na
+float comparisonHigh = comparisonDay == time_tradingday ? measuredHigh : na
+float comparisonLow = comparisonDay == time_tradingday ? measuredLow : na
+bool comparisonFxMissing = comparisonPanel and differentCurrency and nativeDay == time_tradingday and not na(validPrice(nativeClose)) and na(comparisonClose)
+bool comparisonWickFxMissing = comparisonPanel and differentCurrency and nativeDay == time_tradingday and useWicks and validWicks(nativeHigh, nativeLow) and not validWicks(comparisonHigh, comparisonLow)
 
 var int comparableDays = 0
 var int aboveSmaDays = 0
@@ -163,6 +171,8 @@ type PriceSegment
     float endPrice
     int startDay = na
     int endDay = na
+    float chartStart = na
+    float chartEnd = na
 
 segmentDepth(PriceSegment leg) =>
     na(leg) ? na : changePercent(leg.endPrice, leg.startPrice)
@@ -269,13 +279,15 @@ maximumDrawdown(PriceHistory history) =>
 currentDrawdown(PriceHistory history) =>
     useWicks ? history.currentWickDrawdown : changePercent(history.lastClose, history.peakClose)
 
-type DrawdownPoint
-    int day
-    int peakDay
-    PriceSegment segment
+hasChartAnchors(PriceSegment leg) =>
+    not na(leg) and not na(leg.startTime) and not na(leg.endTime) and not na(validPrice(leg.chartStart)) and not na(validPrice(leg.chartEnd))
+
+chartAnchorDetail(PriceSegment leg) =>
+    hasChartAnchors(leg) and chartMeasureCurrency != syminfo.currency ?
+         "\nChart " + syminfo.currency + " · " + str.tostring(leg.chartStart, format.mintick) + " → " + str.tostring(leg.chartEnd, format.mintick) : ""
 
 intersectsVisiblePeriod(PriceSegment leg) =>
-    not na(leg) and (na(chart.left_visible_bar_time) or leg.endTime >= chart.left_visible_bar_time) and
+    hasChartAnchors(leg) and (na(chart.left_visible_bar_time) or leg.endTime >= chart.left_visible_bar_time) and
      (na(chart.right_visible_bar_time) or leg.startTime <= chart.right_visible_bar_time)
 
 drawCompletedDip(PriceSegment dip) =>
@@ -288,30 +300,31 @@ drawCompletedDip(PriceSegment dip) =>
         if segments.size() >= MAX_VISIBLE_LEGS
             line.delete(segments.shift())
             label.delete(labels.shift())
-        segments.push(line.new(dip.startTime, dip.startPrice, dip.endTime, dip.endPrice, xloc = xloc.bar_time, color = ink, width = deep ? 2 : 1))
-        labels.push(label.new(dip.endTime, dip.endPrice, str.tostring(depth, "0.0") + "%", xloc = xloc.bar_time,
+        segments.push(line.new(dip.startTime, dip.chartStart, dip.endTime, dip.chartEnd, xloc = xloc.bar_time, color = ink, width = deep ? 2 : 1))
+        labels.push(label.new(dip.endTime, dip.chartEnd, str.tostring(depth, "0.0") + "%", xloc = xloc.bar_time,
              style = label.style_label_up, color = color.new(PANEL_BG, 22), textcolor = ink, size = size.tiny,
              tooltip = (useWicks ? "Completed structural dip · High to low" : "Completed structural dip · Close to close") +
-             "\n" + (deep ? "≥10%" : "<10%") + " · " + str.tostring(depth, "0.00") + "%" +
+             "\n" + (deep ? "≥10%" : "<10%") + " · " + str.tostring(depth, "0.00") + "% · " + chartMeasureCurrency +
              "\nPeak " + str.format_time(dip.startTime, "yyyy-MM-dd", syminfo.timezone) + " · " + str.tostring(dip.startPrice, format.mintick) +
-             "\nTrough " + str.format_time(dip.endTime, "yyyy-MM-dd", syminfo.timezone) + " · " + str.tostring(dip.endPrice, format.mintick)))
+             "\nTrough " + str.format_time(dip.endTime, "yyyy-MM-dd", syminfo.timezone) + " · " + str.tostring(dip.endPrice, format.mintick) + chartAnchorDetail(dip)))
 
 type SwingPoint
     int at
     int day
     float price
     float threshold
+    float chartPrice
 
 swingSegment(SwingPoint origin, SwingPoint extreme) =>
-    na(origin) or na(extreme) ? na : PriceSegment.new(origin.at, origin.price, extreme.at, extreme.price, origin.day, extreme.day)
+    na(origin) or na(extreme) ? na : PriceSegment.new(origin.at, origin.price, extreme.at, extreme.price, origin.day, extreme.day, origin.chartPrice, extreme.chartPrice)
 
 formatSwingLeg(float move) =>
     (move > 0 ? "+" : "−") + str.tostring(math.abs(move), "0.0") + "%"
 
 swingLegDetail(PriceSegment leg) =>
-    (useWicks ? "Wicks" : "Close") + " · " + syminfo.currency + " · Scale " + str.tostring(swingScale) + "× trailing weekly range" +
+    (useWicks ? "Wicks" : "Close") + " · " + chartMeasureCurrency + " · Scale " + str.tostring(swingScale) + "× trailing weekly range" +
      "\n" + str.format_time(leg.startTime, "yyyy-MM-dd", syminfo.timezone) + " · " + str.tostring(leg.startPrice, format.mintick) +
-     " → " + str.format_time(leg.endTime, "yyyy-MM-dd", syminfo.timezone) + " · " + str.tostring(leg.endPrice, format.mintick)
+     " → " + str.format_time(leg.endTime, "yyyy-MM-dd", syminfo.timezone) + " · " + str.tostring(leg.endPrice, format.mintick) + chartAnchorDetail(leg)
 
 drawCompletedSwing(PriceSegment leg, int confirmedAt) =>
     var array<line> segments = array.new<line>()
@@ -322,8 +335,8 @@ drawCompletedSwing(PriceSegment leg, int confirmedAt) =>
         if segments.size() >= MAX_VISIBLE_LEGS
             line.delete(segments.shift())
             label.delete(labels.shift())
-        segments.push(line.new(leg.startTime, leg.startPrice, leg.endTime, leg.endPrice, xloc = xloc.bar_time, color = ink, width = 2))
-        labels.push(label.new(leg.endTime, leg.endPrice, formatSwingLeg(move), xloc = xloc.bar_time,
+        segments.push(line.new(leg.startTime, leg.chartStart, leg.endTime, leg.chartEnd, xloc = xloc.bar_time, color = ink, width = 2))
+        labels.push(label.new(leg.endTime, leg.chartEnd, formatSwingLeg(move), xloc = xloc.bar_time,
              style = move > 0 ? label.style_label_down : label.style_label_up,
              color = color.new(PANEL_BG, 22), textcolor = ink, size = size.tiny,
              tooltip = (move > 0 ? "Rise confirmed by a reversal down." : "Decline confirmed by a reversal up.") +
@@ -373,7 +386,8 @@ method observeSwingRange(DipHistory dips, int week, float price, float hi, float
         dips.weekLow := math.min(nz(dips.weekLow, lo), lo)
     dips.weekClose := price
 
-method observeDipDay(DipHistory dips, int day, int at, int week, float price, float hi, float lo, array<float> thresholds) =>
+method observeDipDay(DipHistory dips, int day, int at, int week, float price, float hi, float lo, array<float> thresholds,
+     float chartHigh = na, float chartLow = na) =>
     float highPrice = useWicks ? hi : price
     float lowPrice = useWicks ? lo : price
     PriceSegment completed = na
@@ -391,7 +405,7 @@ method observeDipDay(DipHistory dips, int day, int at, int week, float price, fl
             bool newExtreme = na(dips.extreme) or math.sign(priceAtExtreme - dips.extreme.price) == (dips.rising ? 1 : -1)
             if newExtreme
                 // Freeze the scale with each new extreme. It comes from prior completed weeks.
-                dips.extreme := SwingPoint.new(at, day, priceAtExtreme, dips.turnThreshold)
+                dips.extreme := SwingPoint.new(at, day, priceAtExtreme, dips.turnThreshold, dips.rising ? chartHigh : chartLow)
             else
                 float opposite = dips.rising ? lowPrice : highPrice
                 float move = dips.rising ? math.log(dips.extreme.price / opposite) : math.log(opposite / dips.extreme.price)
@@ -407,7 +421,7 @@ method observeDipDay(DipHistory dips, int day, int at, int week, float price, fl
                             if -depth >= threshold
                                 dips.counts.set(level, dips.counts.get(level) + 1)
                     dips.origin := dips.extreme
-                    dips.extreme := SwingPoint.new(at, day, opposite, dips.turnThreshold)
+                    dips.extreme := SwingPoint.new(at, day, opposite, dips.turnThreshold, dips.rising ? chartLow : chartHigh)
                     dips.rising := not dips.rising
     else
         dips.invalidBars += 1
@@ -446,7 +460,8 @@ type MarketPreview
     int fxGaps
     FxQuote fx
 
-marketPreview(PriceHistory prices, DipHistory dips, int sourceDay, int sourceTime, float sourcePrice, float hi, float lo, bool pending, FxQuote sourceFx) =>
+marketPreview(PriceHistory prices, DipHistory dips, int sourceDay, int sourceTime, float sourcePrice, float hi, float lo, bool pending, FxQuote sourceFx,
+     float chartLow = na) =>
     bool hasPending = pending and not na(sourceDay) and (na(prices.lastDay) or sourceDay > prices.lastDay)
     float price = hasPending ? validPrice(sourcePrice) : na
     bool developing = not na(price)
@@ -468,7 +483,7 @@ marketPreview(PriceHistory prices, DipHistory dips, int sourceDay, int sourceTim
             worst := PriceSegment.new(na, reference, na, endpoint, referenceDay, sourceDay)
         developingActive := not na(active) and math.sign(endpoint - active.endPrice) < 0
         if developingActive
-            active := PriceSegment.new(active.startTime, active.startPrice, sourceTime, endpoint, active.startDay, sourceDay)
+            active := PriceSegment.new(active.startTime, active.startPrice, sourceTime, endpoint, active.startDay, sourceDay, active.chartStart, chartLow)
     else if developing
         currentDD := na
     float activeDepth = not na(active) ? segmentDepth(active) : math.sign(dips.turnThreshold) == 1 and not na(dips.previousValidDay) ? 0.0 : na
@@ -480,12 +495,15 @@ marketPreview(PriceHistory prices, DipHistory dips, int sourceDay, int sourceTim
 var PriceHistory chartPrices = newPriceHistory()
 var array<float> thresholds = showCompare ? array.from(COMPARE_DIP_THRESHOLD) : array.from(dipFirst, dipSecond, dipThird, dipFourth)
 var DipHistory chartDips = newDipHistory(thresholds.size())
-var array<DrawdownPoint> chartDrawdowns = array.new<DrawdownPoint>()
+var array<PriceSegment> chartDrawdowns = array.new<PriceSegment>()
 var int chartPeakTime = na
 var int chartPeakDay = na
+var float chartPeakPrice = na
+float chartDayHigh = useWicks ? high : close
+float chartDayLow = useWicks ? low : close
 int swingWeek = time("1W")
 [developingDay, developingPrice, developingHigh, developingLow] = if comparisonPanel
-    developingComparePrices(useStablecoinBridge, comparisonRate)
+    comparisonPrices(false)
 else
     [time_tradingday, close, high, low]
 
@@ -494,26 +512,32 @@ if confirmedDay
     float hi = showCompare ? comparisonHigh : high
     float lo = showCompare ? comparisonLow : low
     float priorWickPeak = chartPrices.wickPeak
+    int priorWickPeakDay = chartPrices.wickPeakDay
     chartPrices.addClose(time_tradingday, metricClose, hi, lo, comparisonFxMissing, comparisonWickFxMissing, comparisonFx)
     if not showMaBehavior or swingMarksVisible
-        PriceSegment leg = chartDips.observeDipDay(time_tradingday, time, swingWeek, metricClose, hi, lo, thresholds)
+        PriceSegment leg = chartDips.observeDipDay(time_tradingday, time, swingWeek, metricClose, hi, lo, thresholds, chartDayHigh, chartDayLow)
         if swingMarksVisible
             drawCompletedSwing(leg, time)
         else if dipMarksVisible and (showCompare or orderedThresholds) and -segmentDepth(leg) >= thresholds.first()
             drawCompletedDip(leg)
     if rarityMarkVisible and not na(metricClose) and (not useWicks or validWicks(hi, lo))
-        bool isPeak = useWicks ? math.sign(hi - chartPrices.wickPeak) == 0 : math.sign(metricClose - chartPrices.peakClose) == 0
+        int latestPeakDay = useWicks ? chartPrices.wickPeakDay : chartPrices.peakCloseDay
+        bool isPeak = latestPeakDay == time_tradingday
         if isPeak and not useWicks
             chartPeakTime := time
             chartPeakDay := time_tradingday
+            chartPeakPrice := chartDayHigh
         // A rarity endpoint is always within this many calendar days of the anchor.
-        if chartDrawdowns.size() >= OPPORTUNITY_LAG_DAYS + 1
-            chartDrawdowns.shift()
-        chartDrawdowns.push(DrawdownPoint.new(time_tradingday, chartPeakDay,
-             PriceSegment.new(chartPeakTime, useWicks ? priorWickPeak : chartPrices.peakClose, time, useWicks ? lo : metricClose)))
+        int referenceDay = useWicks ? priorWickPeakDay : latestPeakDay
+        if not na(referenceDay) and chartPeakDay == referenceDay
+            if chartDrawdowns.size() >= OPPORTUNITY_LAG_DAYS + 1
+                chartDrawdowns.shift()
+            chartDrawdowns.push(PriceSegment.new(chartPeakTime, useWicks ? priorWickPeak : chartPrices.peakClose,
+                 time, useWicks ? lo : metricClose, referenceDay, time_tradingday, chartPeakPrice, chartDayLow))
         if isPeak and useWicks
             chartPeakTime := time
             chartPeakDay := time_tradingday
+            chartPeakPrice := chartDayHigh
 
 consecutiveSma(float price, int length) =>
     // ta.sma skips na. The streak prevents its window from crossing an invalid bar.
@@ -908,7 +932,8 @@ marketPriceDetail(MarketPreview market) =>
         FxQuote quote = market.fx
         if not na(quote.stableCloseAt)
             detail += "\n" + quote.stablecoin + "/USD " + str.tostring(quote.stableUsd, "0.000000") + " · " + str.format_time(quote.stableCloseAt, "yyyy-MM-dd HH:mm", SESSION_ZONE) + " UTC"
-        detail += "\nUSD/SEK " + str.tostring(quote.usdSek, "0.000000") + " · " + str.format_time(quote.usdCloseAt, "yyyy-MM-dd HH:mm", SESSION_ZONE) + " UTC"
+        if not na(quote.targetCloseAt)
+            detail += "\nUSD/" + quote.targetCurrency + " " + str.tostring(quote.usdTarget, "0.000000") + " · " + str.format_time(quote.targetCloseAt, "yyyy-MM-dd HH:mm", SESSION_ZONE) + " UTC"
     detail + "\nUpdates with the chart's feed. Exchange and FX feeds may be delayed."
 
 currentDrawdownDetail() =>
@@ -1162,7 +1187,7 @@ cachedComparisons(PriceHistory prices, int anchor) =>
         cachedAnchor := anchor
     snapshots
 
-comparisonMetrics(PriceHistory prices, DipHistory dips, CompareMaHistory ma, int oneYear, int threeYears, int fiveYears, bool useSEK) =>
+comparisonMetrics(PriceHistory prices, DipHistory dips, CompareMaHistory ma, int oneYear, int threeYears, int fiveYears, string quoteCurrency) =>
     [ref1, close1] = referenceForAnchor(prices, oneYear)
     [ref3, close3] = referenceForAnchor(prices, threeYears)
     [ref5, close5] = referenceForAnchor(prices, fiveYears)
@@ -1171,7 +1196,7 @@ comparisonMetrics(PriceHistory prices, DipHistory dips, CompareMaHistory ma, int
     bool history3 = prices.lastDay > threeYears
     bool history5 = prices.lastDay > fiveYears
     // Price and dip histories stay in their own context.
-    [useSEK ? currency.SEK : syminfo.currency, prices.firstDay, prices.lastDay, ref1, ref3, ref5,
+    [quoteCurrency, prices.firstDay, prices.lastDay, ref1, ref3, ref5,
      count, dips.observedDays, dips.invalidBars, prices.missingFx,
      annualizedReturn(prices), prices.lastDay > oneYear ? changePercent(prices.lastClose, close1) : na,
      history3 ? changePercent(prices.lastClose, close3) : na, history5 ? changePercent(prices.lastClose, close5) : na,
@@ -1180,12 +1205,12 @@ comparisonMetrics(PriceHistory prices, DipHistory dips, CompareMaHistory ma, int
      history5 ? periodCagr(ref5, close5, prices.lastDay, prices.lastClose) : na, cachedComparisons(prices, comparisonAnchor),
      ma.recent.size() > 0 ? ma.recent : na]
 
-remoteComparison(int oneYear, int threeYears, int fiveYears, bool useSEK, float price, float hi, float lo) =>
+remoteComparison(int oneYear, int threeYears, int fiveYears, float price, float hi, float lo) =>
     var PriceHistory prices = newPriceHistory()
     var DipHistory dips = newDipHistory(1)
     var CompareMaHistory ma = newCompareMaHistory()
     var array<float> levels = array.from(COMPARE_DIP_THRESHOLD)
-    float mean = compareSma(price, useSEK and syminfo.currency != currency.SEK)
+    float mean = compareSma(price, comparisonUsesOwnPrices)
     int week = time("1W")
     // The previous native bar is final even during a delayed feed's open bar.
     // Include the current native bar only if historical and past its own close.
@@ -1198,10 +1223,10 @@ remoteComparison(int oneYear, int threeYears, int fiveYears, bool useSEK, float 
         prices.addClose(time_tradingday, price, hi, lo, comparisonFxMissing, comparisonWickFxMissing, comparisonFx)
         dips.observeDipDay(time_tradingday, time, week, price, hi, lo, levels)
         ma.addMaClose(time_tradingday, price, mean, barstate.islast)
-    [liveDay, livePrice, liveHigh, liveLow] = developingComparePrices(useStablecoinBridge, comparisonRate)
+    [liveDay, livePrice, liveHigh, liveLow] = comparisonPrices(false)
     MarketPreview preview = marketPreview(prices, dips, time_tradingday, time, liveDay == time_tradingday ? livePrice : na, liveHigh, liveLow, true, comparisonFx)
     [quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, incompleteFx, cagr, ret1, ret3, ret5, rate, interval, cagr3, cagr5, opportunities, maSnapshots] =
-         comparisonMetrics(prices, dips, ma, oneYear, threeYears, fiveYears, useSEK)
+         comparisonMetrics(prices, dips, ma, oneYear, threeYears, fiveYears, comparisonCurrency)
     [quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, incompleteFx, cagr, ret1, ret3, ret5, rate, interval, cagr3, cagr5, opportunities, maSnapshots, preview]
 
 const int ROW_CAGR = 0
@@ -1249,10 +1274,10 @@ canonicalSymbol(string tickerId) =>
 var array<string> extraSymbols = array.new<string>()
 var array<ComparisonColumn> columns = array.new<ComparisonColumn>()
 MarketPreview chartMarket = barstate.islast and supportedChart ? marketPreview(chartPrices, chartDips, time_tradingday, time,
-     developingDay == time_tradingday ? developingPrice : na, developingHigh, developingLow, barstate.isrealtime and not barstate.isconfirmed, comparisonFx) : na
+     developingDay == time_tradingday ? developingPrice : na, developingHigh, developingLow, barstate.isrealtime and not barstate.isconfirmed, comparisonFx, chartDayLow) : na
 if comparisonPanel
     var CompareMaHistory ma = newCompareMaHistory()
-    float mean = compareInSEK and syminfo.currency != currency.SEK ? compareSma(comparisonClose, true) : smaForDay
+    float mean = comparisonUsesOwnPrices ? compareSma(comparisonClose, true) : smaForDay
     if confirmedDay
         ma.addMaClose(time_tradingday, comparisonClose, mean, barstate.islast)
     if barstate.isfirst
@@ -1263,14 +1288,14 @@ if comparisonPanel
             string standardSymbol = canonicalSymbol(symbol)
             if enabled.get(index) and symbol != "" and standardSymbol != chartSymbol and not extraSymbols.includes(standardSymbol)
                 extraSymbols.push(standardSymbol)
-    [quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, rate, interval, cagr3, cagr5, opportunities, maSnapshots] = comparisonMetrics(chartPrices, chartDips, ma, oneYearTarget, threeYearTarget, fiveYearTarget, compareInSEK)
+    [quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, rate, interval, cagr3, cagr5, opportunities, maSnapshots] = comparisonMetrics(chartPrices, chartDips, ma, oneYearTarget, threeYearTarget, fiveYearTarget, comparisonCurrency)
     if barstate.islast
         columns.clear()
         columns.push(comparisonColumn(canonicalSymbol(syminfo.tickerid), quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, rate, interval, cagr3, cagr5, opportunities, maSnapshots, chartMarket))
 if comparisonPanel
     for symbol in extraSymbols
         [quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, rate, interval, cagr3, cagr5, opportunities, maSnapshots, market] = request.security(symbol, "1D",
-             remoteComparison(oneYearTarget, threeYearTarget, fiveYearTarget, compareInSEK, comparisonClose, comparisonHigh, comparisonLow),
+             remoteComparison(oneYearTarget, threeYearTarget, fiveYearTarget, comparisonClose, comparisonHigh, comparisonLow),
              lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
         if barstate.islast
             columns.push(comparisonColumn(symbol, quoteCurrency, start, finish, ref1, ref3, ref5, dipCount, observed, invalid, missingFx, cagr, ret1, ret3, ret5, rate, interval, cagr3, cagr5, opportunities, maSnapshots, market))
@@ -1283,8 +1308,11 @@ comparisonStart(ComparisonColumn asset, int row) =>
         ROW_MAX_DD => na(asset.market) ? na : asset.market.drawdownStart
         => asset.firstDay
 
+validComparisonCurrency(string quoteCurrency) =>
+    not na(quoteCurrency) and quoteCurrency != "" and quoteCurrency != "NONE"
+
 sameComparisonCurrency(ComparisonColumn left, ComparisonColumn right) =>
-    not na(left.currency) and left.currency != "" and left.currency == right.currency
+    validComparisonCurrency(left.currency) and left.currency == right.currency
 
 rankedValue(ComparisonColumn asset, int row) =>
     float value = asset.values.get(row)
@@ -1373,7 +1401,7 @@ opportunityGroups(array<ComparisonColumn> assets, int anchor) =>
     map<string, OpportunityGroup> groups = map.new<string, OpportunityGroup>()
     int comparableGroups = 0
     for asset in assets
-        if not na(asset.currency) and asset.currency != "" and not groups.contains(asset.currency)
+        if validComparisonCurrency(asset.currency) and not groups.contains(asset.currency)
             OpportunityGroup group = opportunityGroup(assets, asset.currency, anchor)
             groups.put(asset.currency, group)
             if group.count >= 2
@@ -1394,7 +1422,7 @@ opportunityColor(OpportunityGroup group, ComparisonSnapshot snapshot) =>
 opportunityDetail(ComparisonColumn asset, OpportunityGroup group, ComparisonSnapshot snapshot, int comparableGroups, bool ranked) =>
     string detail = "Historical heuristic · Quality (70% 3Y CAGR + 30% 5Y CAGR) × recovery upside from the confirmed " + (useWicks ? "session low to the prior ATH high." : "close to the ATH close.")
     if na(snapshot)
-        string reason = asset.missingFx ? "Latest confirmed SEK close unavailable." : na(asset.cagr3) ? "A valid 3Y closing reference is required." :
+        string reason = asset.missingFx ? "Latest confirmed close unavailable in " + asset.currency + "." : na(asset.cagr3) ? "A valid 3Y closing reference is required." :
              na(asset.cagr5) ? "A valid 5Y closing reference is required." :
              not recentSession(asset.lastDay, comparisonAnchor) ? "No confirmed close within the last four calendar days." :
              "Requires positive Quality, a drawdown and continuous FX coverage of the five-year comparison."
@@ -1417,7 +1445,7 @@ opportunityDetail(ComparisonColumn asset, OpportunityGroup group, ComparisonSnap
 comparisonDetail(ComparisonColumn asset, int row) =>
     string dates = "Loaded history: " + formatPeriod(asset.firstDay, asset.lastDay) + "."
     if not na(asset.market) and asset.market.fxGaps > 0
-        dates += "\n" + str.tostring(asset.market.fxGaps) + " sessions missing required SEK data. Endpoints and coverage are checked per metric."
+        dates += "\n" + str.tostring(asset.market.fxGaps) + " sessions missing required " + asset.currency + " data. Endpoints and coverage are checked per metric."
     string detail = switch row
         ROW_1Y => "Reference " + formatDay(asset.ref1) + " · Shared target " + formatDay(oneYearTarget) + "."
         ROW_3Y => "Reference " + formatDay(asset.ref3) + " · Shared target " + formatDay(threeYearTarget) + ".\n3Y CAGR: " + formatPercent(asset.missingFx ? na : asset.cagr3) + "."
@@ -1486,26 +1514,26 @@ dipRarityDetail(ComparisonSnapshot snapshot, int cutoff, bool missingFx) =>
         if snapshot.endDay != cutoff
             detail += " Last session: " + formatDay(snapshot.endDay) + "."
     else
-        detail += missingFx ? "\nSEK conversion incomplete." : "\nValid five-year coverage and a confirmed close near the cutoff are required."
+        detail += missingFx ? "\nCurrency conversion incomplete." : "\nValid five-year coverage and a confirmed close near the cutoff are required."
     detail
 
 drawPriceReference(PriceSegment segmentPrices, string value, string detail, color ink, string lineStyle, string labelStyle, bool showLine = true) =>
     var line segment = na
     var label tag = na
-    if na(segmentPrices)
+    if not hasChartAnchors(segmentPrices)
         line.delete(segment)
         label.delete(tag)
         segment := na
         tag := na
     else
         if na(segment)
-            segment := line.new(segmentPrices.startTime, segmentPrices.startPrice, segmentPrices.endTime, segmentPrices.endPrice, xloc = xloc.bar_time, color = ink, style = lineStyle)
-            tag := label.new(segmentPrices.endTime, segmentPrices.endPrice, xloc = xloc.bar_time, style = labelStyle,
+            segment := line.new(segmentPrices.startTime, segmentPrices.chartStart, segmentPrices.endTime, segmentPrices.chartEnd, xloc = xloc.bar_time, color = ink, style = lineStyle)
+            tag := label.new(segmentPrices.endTime, segmentPrices.chartEnd, xloc = xloc.bar_time, style = labelStyle,
                  color = color.new(PANEL_BG, 15), textcolor = ink, size = size.tiny)
         else
-            line.set_xy1(segment, segmentPrices.startTime, segmentPrices.startPrice)
-            line.set_xy2(segment, segmentPrices.endTime, segmentPrices.endPrice)
-            label.set_xy(tag, segmentPrices.endTime, segmentPrices.endPrice)
+            line.set_xy1(segment, segmentPrices.startTime, segmentPrices.chartStart)
+            line.set_xy2(segment, segmentPrices.endTime, segmentPrices.chartEnd)
+            label.set_xy(tag, segmentPrices.endTime, segmentPrices.chartEnd)
             label.set_style(tag, labelStyle)
             label.set_textcolor(tag, ink)
         line.set_color(segment, showLine ? ink : color.new(ink, 100))
@@ -1514,7 +1542,7 @@ drawPriceReference(PriceSegment segmentPrices, string value, string detail, colo
     tag
 
 drawActiveDip(MarketPreview market) =>
-    string detail = activeDipDetail(market) + "\n" + marketPriceDetail(market)
+    string detail = activeDipDetail(market) + "\nMeasured in " + chartMeasureCurrency + chartAnchorDetail(market.activeLeg) + "\n" + marketPriceDetail(market)
     drawPriceReference(market.activeLeg, "Active " + formatMarketValue(formatPercent(market.active), market.developingActive), detail, ACTIVE_DIP_COLOR, line.style_dashed, label.style_label_right)
 
 drawActiveSwing(PriceSegment leg, bool rising, bool developing = false) =>
@@ -1530,12 +1558,12 @@ drawRarityDip(ComparisonSnapshot snapshot, string detail) =>
     string tip = detail
     if hasDipRarity(snapshot)
         for mark in chartDrawdowns
-            if mark.day == snapshot.endDay
-                dip := mark.segment
+            if mark.endDay == snapshot.endDay
+                dip := mark
                 value := "Rarity " + formatDipRarity(snapshot.rarityCount, snapshot.rarityDays)
-                tip += "\nATH " + formatDay(mark.peakDay) + " · " + str.tostring(dip.startPrice, format.mintick)
-                tip += "\n" + (useWicks ? "Low " : "Close ") + formatDay(mark.day) + " · " + str.tostring(dip.endPrice, format.mintick)
-                tip += " · DD " + formatPercent(snapshot.drawdown)
+                tip += "\nATH " + formatDay(dip.startDay) + " · " + str.tostring(dip.startPrice, format.mintick)
+                tip += "\n" + (useWicks ? "Low " : "Close ") + formatDay(dip.endDay) + " · " + str.tostring(dip.endPrice, format.mintick)
+                tip += " · DD " + formatPercent(snapshot.drawdown) + " · " + chartMeasureCurrency + chartAnchorDetail(dip)
                 break
     drawPriceReference(dip, value, tip, RARITY_DIP_COLOR, line.style_dotted, label.style_label_up, not na(snapshot) and snapshot.drawdown < 0)
 
@@ -1579,8 +1607,8 @@ maComparisonDetail(ComparisonColumn asset, MaComparison snapshot, int cutoff, in
             detail += "\nAt least " + str.tostring(MIN_MA_DISTANCES) + " prior sessions are required" + (math.sign(snapshot.distance) != 0 ? " on this side." : ".")
         else
             detail += "\nExtreme thresholds P" + str.tostring(maExtremePercentile) + " / P" + str.tostring(100 - maExtremePercentile) + "."
-    if chartSymbol and compareInSEK and syminfo.currency != currency.SEK
-        detail += "\nThe chart SMA uses " + syminfo.currency + "."
+    if chartSymbol and comparisonUsesOwnPrices
+        detail += "\nThe chart SMA follows the chart's price series."
     detail
 
 maCell(table panel, int column, int row, string value, string detail, color extreme = na) =>
@@ -1593,7 +1621,7 @@ renderComparison(table panel, array<ComparisonColumn> assets, int firstRow) =>
     if firstRow > 0
         // Leave space for TradingView's chart controls in the top-right corner.
         table.cell(panel, 0, 0, " ", text_size = size.small)
-    table.cell(panel, 0, firstRow, compareInSEK ? "SEK" : "Native", text_color = LABEL_COLOR, text_halign = text.align_left, text_size = size.small, bgcolor = SECTION_BG)
+    table.cell(panel, 0, firstRow, compareCurrency, text_color = LABEL_COLOR, text_halign = text.align_left, text_size = size.small, bgcolor = SECTION_BG)
     int opportunityRow = firstRow + 1
     int firstMetricRow = opportunityRow + 1
     table.cell(panel, 0, opportunityRow, "Opportunity", text_color = VALUE_COLOR, text_halign = text.align_left, text_size = size.small, bgcolor = PANEL_BG, text_formatting = text.format_bold)
@@ -1621,11 +1649,10 @@ renderComparison(table panel, array<ComparisonColumn> assets, int firstRow) =>
         string score = na(displayed) ? MISSING_VALUE : formatOpportunity(displayed.score)
         color scoreInk = ranked ? opportunityColor(group, snapshot) : na(displayed) ? MUTED_COLOR : VALUE_COLOR
         table.cell(panel, column, opportunityRow, score, text_color = scoreInk, text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = opportunityDetail(asset, group, displayed, comparableGroups, ranked), text_formatting = text.format_bold)
-        string currencyHint = index == 0 and not chartCurrencyMatches ? "\nSelect Native or set the chart price currency to SEK to see the requested reference." : ""
         for [row, value] in asset.values
             string displayValue = row == ROW_DIPS ? dipFrequencyText(asset.dipCount, value, asset.yearsPerDip) : formatPercent(value)
             bool provisional = not na(asset.market) and (row == ROW_MAX_DD ? asset.market.developingMax : row == ROW_ACTIVE_DIP ? asset.market.developingActive : row == ROW_CURRENT_DD and asset.market.developing)
-            string detail = comparisonDetail(asset, row) + ((showDipMarks or showSwingLegs) and (row == ROW_DIPS or row == ROW_ACTIVE_DIP) ? currencyHint : "")
+            string detail = comparisonDetail(asset, row)
             table.cell(panel, column, firstMetricRow + row, formatMarketValue(displayValue, provisional), text_color = comparisonColor(assets, asset, row), text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = detail)
         maCell(panel, column, priceRow, formatMarketPrice(asset.market), marketPriceDetail(asset.market) + (na(asset.currency) ? "" : "\n" + asset.currency))
         int rarityCutoff = not na(group) ? dipRarityCutoff(assets, asset.currency, group.cutoff, comparisonAnchor) : na
@@ -1638,7 +1665,7 @@ renderComparison(table panel, array<ComparisonColumn> assets, int firstRow) =>
         bool validRarity = hasDipRarity(rarity)
         string rarityValue = validRarity ? formatDipRarity(rarity.rarityCount, rarity.rarityDays) : MISSING_VALUE
         string rarityDetail = dipRarityDetail(rarity, rarityCutoff, asset.missingFx)
-        table.cell(panel, column, firstMetricRow + ROW_RARITY, rarityValue, text_color = validRarity ? VALUE_COLOR : MUTED_COLOR, text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = rarityDetail + (showRarityMark ? currencyHint : ""))
+        table.cell(panel, column, firstMetricRow + ROW_RARITY, rarityValue, text_color = validRarity ? VALUE_COLOR : MUTED_COLOR, text_halign = text.align_right, text_size = size.small, bgcolor = PANEL_BG, tooltip = rarityDetail)
         if index == 0 and rarityMarkVisible
             drawRarityDip(rarity, rarityDetail)
         int sharedMaCutoff = na(group) ? na : group.cutoff
