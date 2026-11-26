@@ -872,8 +872,11 @@ referenceAt(PriceHistory history, int target) =>
     // Keep invalid bars in the search so an unknown reference cannot be skipped.
     [na(slot) ? na : history.sessionDays.get(slot), na(slot) ? na : history.sessionCloses.get(slot)]
 
+formatPercentNumber(float value) =>
+    str.tostring(value, "0.00")
+
 formatPercent(float value) =>
-    na(value) ? MISSING_VALUE : str.tostring(value, "0.00") + "%"
+    na(value) ? MISSING_VALUE : formatPercentNumber(value) + "%"
 
 formatMarketValue(string value, bool developing) =>
     developing and value != MISSING_VALUE ? "~" + value : value
@@ -1280,35 +1283,44 @@ comparisonStart(ComparisonColumn asset, int row) =>
         ROW_MAX_DD => na(asset.market) ? na : asset.market.drawdownStart
         => asset.firstDay
 
-sameComparisonDateAndCurrency(ComparisonColumn left, ComparisonColumn right) =>
-    not na(left.currency) and left.currency != "" and left.currency == right.currency and not na(left.lastDay) and left.lastDay == right.lastDay
+sameComparisonCurrency(ComparisonColumn left, ComparisonColumn right) =>
+    not na(left.currency) and left.currency != "" and left.currency == right.currency
 
 rankedValue(ComparisonColumn asset, int row) =>
     float value = asset.values.get(row)
-    bool currentRow = row == ROW_CURRENT_DD or row == ROW_MAX_DD
-    bool comparable = not currentRow or (not na(asset.market) and not asset.market.developing and na(asset.market.pendingDay))
-    if useWicks and row == ROW_MAX_DD and asset.invalidBars > 0
-        comparable := false
-    comparable ? (row == ROW_CURRENT_DD ? (asset.quality > 0 ? -value : na) : value) : na
+    if row == ROW_CURRENT_DD
+        MarketPreview market = asset.market
+        bool comparable = not na(value) and asset.quality > 0 and not na(market) and recentSession(market.day, comparisonAnchor) and
+             (na(market.pendingDay) or market.pendingDay == market.day)
+        comparable ? -str.tonumber(formatPercentNumber(value)) : na
+    else
+        bool comparable = row != ROW_MAX_DD or (not na(asset.market) and not asset.market.developing and na(asset.market.pendingDay) and
+             not (useWicks and asset.invalidBars > 0))
+        comparable ? math.round(value, 2) : na
 
 comparisonColor(array<ComparisonColumn> assets, ComparisonColumn asset, int row) =>
     float value = asset.values.get(row)
     color result = na(value) ? MUTED_COLOR : VALUE_COLOR
     float rank = rankedValue(asset, row)
     if not na(rank) and row <= ROW_MAX_DD
+        bool currentDrawdownRow = row == ROW_CURRENT_DD
+        int sessionDay = currentDrawdownRow ? asset.market.day : asset.lastDay
         int start = comparisonStart(asset, row)
-        float rounded = math.round(rank, 2)
-        float lowest = rounded
-        float highest = rounded
+        float lowest = rank
+        float highest = rank
+        bool newerSession = false
         for other in assets
             float otherRank = rankedValue(other, row)
-            bool samePeriod = row == ROW_CURRENT_DD or start == comparisonStart(other, row)
-            if not na(otherRank) and samePeriod and sameComparisonDateAndCurrency(asset, other)
-                float otherRounded = math.round(otherRank, 2)
-                lowest := math.min(lowest, otherRounded)
-                highest := math.max(highest, otherRounded)
-        if lowest < highest
-            result := rounded == lowest ? LOW_COLOR : rounded == highest ? BEST_COLOR : VALUE_COLOR
+            if not na(otherRank) and sameComparisonCurrency(asset, other)
+                int otherDay = currentDrawdownRow ? other.market.day : other.lastDay
+                if currentDrawdownRow and otherDay > sessionDay
+                    newerSession := true
+                    break
+                if otherDay == sessionDay and (currentDrawdownRow or start == comparisonStart(other, row))
+                    lowest := math.min(lowest, otherRank)
+                    highest := math.max(highest, otherRank)
+        if not newerSession and lowest < highest
+            result := rank == lowest ? LOW_COLOR : rank == highest ? BEST_COLOR : VALUE_COLOR
     result
 
 comparisonForCutoff(ComparisonColumn asset, int cutoff) =>
@@ -1410,7 +1422,7 @@ comparisonDetail(ComparisonColumn asset, int row) =>
         ROW_1Y => "Reference " + formatDay(asset.ref1) + " · Shared target " + formatDay(oneYearTarget) + "."
         ROW_3Y => "Reference " + formatDay(asset.ref3) + " · Shared target " + formatDay(threeYearTarget) + ".\n3Y CAGR: " + formatPercent(asset.missingFx ? na : asset.cagr3) + "."
         ROW_5Y => "Reference " + formatDay(asset.ref5) + " · Shared target " + formatDay(fiveYearTarget) + ".\n5Y CAGR: " + formatPercent(asset.missingFx ? na : asset.cagr5) + "."
-        ROW_CURRENT_DD => currentDrawdownDetail() + " Colors compare confirmed values with matching date and currency among symbols with positive Quality." +
+        ROW_CURRENT_DD => currentDrawdownDetail() + " Colors compare the displayed values at two decimals, including ~, for the latest comparable session in this currency. Positive Quality required. Deeper ranks higher." +
              (na(asset.market) ? "" : "\nComparable since " + formatDay(asset.market.drawdownStart))
         ROW_MAX_DD => maxDrawdownDetail(asset.missingFx ? na : asset.market) + "\nCloser to zero ranks higher when comparable."
         ROW_MAX_DIP => maxDipDetail(asset.missingFx ? na : asset.market)

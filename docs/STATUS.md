@@ -1,5 +1,10 @@
 # Status
 
+## Färger för Current DD
+
+- TradingView Desktop kompilerade slutkällan som **revision 49**, med tre tidigare `CW10003`-varningar. På BTCUSDT 1D den 26 november 2026 visade Compare i SEK/Wicks grönt för BTCUSDT:s preliminära **−50,07 %** och rött för XACTHDIV:s bekräftade **−2,93 %**. VWCE:s bekräftade **−6,52 %** samma dag var neutralt mellan yttervärdena. ACWI:s värde var från den 25 november och var neutralt. BTCUSDT var också grönt i SEK/Close. I Native var BTCUSDT ensam i USDT och neutral. I EUR färgades VWCE **−6,36 %** grönt och EUNL **−5,35 %** rött på samma bekräftade sessionsdag.
+- Ett separat kontrollerat Pine-fall på den öppna BTC-dagsbaren visade att grönt flyttade från bekräftade **−10,00 %** till det preliminära värdet när det växlade från **−9,98 %** till **−10,02 %**. Lokala referensfall och Pine-kontroller täckte även lika visad precision, färskhet, väntande och saknade kurser samt Quality. Färgväxlingen framkallades med syntetiska värden. [Metod](METRICS.md#symboljämförelse)
+
 ## Drawdowns, rörelseben och SEK för BTCUSDT
 
 - TradingView Desktop kompilerade källan från VS Code och sparade **revision 47** i den befintliga privata indikatorn. Tre tidigare `CW10003`-varningar kvarstår för `maForDailyClose` (550:9), `ta.sma` (556:25) och `remoteComparison` (1270:14). Femkolumnsvyn körde på BTCUSDT och SXR8 i SEK och Native. På SXR8 1W visades intervallinstruktionen.
